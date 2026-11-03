@@ -216,6 +216,94 @@ const INITIAL_DATA = {
       paid_at: new Date().toISOString(),
       notes: 'Treasury verified'
     }
+  ],
+  users: [
+    {
+      id: 'usr-admin-01',
+      full_name: 'Pastor Samuel',
+      email: 'admin@berean.org',
+      password: 'password123',
+      role: 'admin',
+      is_active: true,
+      created_at: new Date(Date.now() - 30 * 86400000).toISOString()
+    },
+    {
+      id: 'usr-registrar-01',
+      full_name: 'Sis. Mary',
+      email: 'registrar@berean.org',
+      password: 'password123',
+      role: 'registrar',
+      is_active: true,
+      created_at: new Date(Date.now() - 25 * 86400000).toISOString()
+    },
+    {
+      id: 'usr-usher-01',
+      full_name: 'Bro. Caleb',
+      email: 'usher@berean.org',
+      password: 'password123',
+      role: 'usher',
+      is_active: true,
+      created_at: new Date(Date.now() - 20 * 86400000).toISOString()
+    },
+    {
+      id: 'usr-kitchen-01',
+      full_name: 'Bro. Peter',
+      email: 'kitchen@berean.org',
+      password: 'password123',
+      role: 'kitchen',
+      is_active: true,
+      created_at: new Date(Date.now() - 15 * 86400000).toISOString()
+    }
+  ],
+  audit_logs: [
+    {
+      id: 'audit-01',
+      actor_id: 'usr-admin-01',
+      actor_name: 'Pastor Samuel',
+      actor_role: 'admin',
+      action: 'EVENT_CREATED',
+      entity_type: 'event',
+      entity_id: 'evt-2026-camp',
+      details: 'Created event "Berean Annual Bible Conference & Camp 2026"',
+      metadata: { venue: 'Berean Bible Baptist Church Sanctuary & Fellowship Hall', capacity: 300 },
+      created_at: new Date(Date.now() - 5 * 86400000).toISOString()
+    },
+    {
+      id: 'audit-02',
+      actor_id: 'usr-admin-01',
+      actor_name: 'Pastor Samuel',
+      actor_role: 'admin',
+      action: 'DAY_OPENED',
+      entity_type: 'event_day',
+      entity_id: 'day-1',
+      details: 'Opened check-in window for Day 1',
+      metadata: { day_number: 1 },
+      created_at: new Date(Date.now() - 86400000).toISOString()
+    },
+    {
+      id: 'audit-03',
+      actor_id: 'usr-registrar-01',
+      actor_name: 'Sis. Mary',
+      actor_role: 'registrar',
+      action: 'ATTENDEE_REGISTERED',
+      entity_type: 'attendee',
+      entity_id: 'att-1',
+      details: 'Registered attendee Benjamin Santos (staff_assisted)',
+      metadata: { classification: 'member', family: 'Santos Family' },
+      created_at: new Date(Date.now() - 3600000 * 5).toISOString()
+    },
+    {
+      id: 'audit-04',
+      actor_id: 'usr-registrar-01',
+      actor_name: 'Sis. Mary',
+      actor_role: 'registrar',
+      action: 'PAYMENT_RECORDED',
+      entity_type: 'payment',
+      entity_id: 'pay-1',
+      details: 'Recorded ₱250.00 cash payment for Benjamin Santos (OR-1001)',
+      metadata: { amount: 250, method: 'cash', reference: 'OR-1001' },
+      created_at: new Date(Date.now() - 3600000 * 4).toISOString()
+    }
   ]
 }
 
@@ -234,7 +322,20 @@ export function getStore() {
     return JSON.parse(JSON.stringify(INITIAL_DATA))
   }
   try {
-    return JSON.parse(raw)
+    const parsed = JSON.parse(raw)
+    let needsUpdate = false
+    if (!parsed.users || !Array.isArray(parsed.users)) {
+      parsed.users = JSON.parse(JSON.stringify(INITIAL_DATA.users))
+      needsUpdate = true
+    }
+    if (!parsed.audit_logs || !Array.isArray(parsed.audit_logs)) {
+      parsed.audit_logs = JSON.parse(JSON.stringify(INITIAL_DATA.audit_logs))
+      needsUpdate = true
+    }
+    if (needsUpdate) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
+    }
+    return parsed
   } catch {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_DATA))
     return JSON.parse(JSON.stringify(INITIAL_DATA))

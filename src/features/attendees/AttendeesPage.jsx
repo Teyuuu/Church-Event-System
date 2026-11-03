@@ -12,6 +12,7 @@ import { LoadingState } from '../../components/ui/LoadingState'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { RegistrationForm } from './RegistrationForm'
 import { FamilyRegistrationModal } from './FamilyRegistrationModal'
+import { EditAttendeeModal } from './EditAttendeeModal'
 import { PaymentModal } from '../payments/PaymentModal'
 import { formatDate } from '../../utils/date'
 import {
@@ -26,7 +27,9 @@ import {
   Copy,
   Check,
   ArrowLeft,
-  ExternalLink
+  ExternalLink,
+  Pencil,
+  MoreVertical
 } from 'lucide-react'
 
 export function AttendeesPage() {
@@ -43,8 +46,30 @@ export function AttendeesPage() {
   // Modals
   const [isSingleModalOpen, setIsSingleModalOpen] = useState(false)
   const [isFamilyModalOpen, setIsFamilyModalOpen] = useState(false)
+  const [selectedRegForEdit, setSelectedRegForEdit] = useState(null)
   const [selectedRegForPayment, setSelectedRegForPayment] = useState(null)
+  const [openMenuId, setOpenMenuId] = useState(null)
   const [copiedLink, setCopiedLink] = useState(false)
+
+  // Close 3-dots action menu on outside click or Escape key
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (openMenuId && !e.target.closest('.action-dropdown')) {
+        setOpenMenuId(null)
+      }
+    }
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setOpenMenuId(null)
+      }
+    }
+    document.addEventListener('click', handleClickOutside)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('click', handleClickOutside)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [openMenuId])
 
   const loadData = async () => {
     setLoading(true)
@@ -98,8 +123,10 @@ export function AttendeesPage() {
     const att = r.attendee
     if (!att) return false
 
+    const fullName = `${att.first_name} ${att.middle_name || ''} ${att.last_name}`.replace(/\s+/g, ' ').trim()
     const matchesSearch =
-      `${att.first_name} ${att.last_name}`.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      fullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      `${att.last_name}, ${att.first_name}`.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (att.email && att.email.toLowerCase().includes(searchQuery.toLowerCase())) ||
       (att.contact_number && att.contact_number.includes(searchQuery))
 
@@ -176,6 +203,7 @@ export function AttendeesPage() {
             <option value="visitor">Visitor</option>
             <option value="youth">Youth</option>
             <option value="pastor">Pastor / Minister</option>
+            <option value="worker">Church Worker</option>
             <option value="guest">Guest</option>
           </select>
 
@@ -206,7 +234,7 @@ export function AttendeesPage() {
         />
       ) : (
         <div className="card">
-          <div className="table-responsive">
+          <div className="table-responsive" style={{ minHeight: '260px' }}>
             <table className="data-table">
               <thead>
                 <tr>
@@ -216,12 +244,15 @@ export function AttendeesPage() {
                   <th>Source</th>
                   {event.has_registration_fee && <th>Payment</th>}
                   <th>QR Code</th>
-                  <th>Actions</th>
+                  <th style={{ textAlign: 'center', width: '70px' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map(r => {
+                {filtered.map((r, index) => {
                   const att = r.attendee
+                  const isMenuOpen = openMenuId === r.id
+                  const isNearBottom = index >= filtered.length - 2 && filtered.length >= 3
+
                   return (
                     <tr key={r.id}>
                       <td>
@@ -274,27 +305,62 @@ export function AttendeesPage() {
                           </Button>
                         </div>
                       </td>
-                      <td>
-                        <div style={{ display: 'flex', gap: '0.4rem' }}>
-                          {event.has_registration_fee && isRegistrar && (
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              onClick={() => setSelectedRegForPayment(r)}
-                              title="Record or view payment"
-                            >
-                              <DollarSign size={14} color="var(--color-success)" />
-                              <span>Pay</span>
-                            </Button>
-                          )}
-                          <Link
-                            to={`/events/${eventId}/print?regId=${r.id}`}
-                            className="btn btn-secondary btn-sm"
-                            title="Print Card"
+                      <td style={{ textAlign: 'center' }}>
+                        <div className="action-dropdown">
+                          <button
+                            type="button"
+                            className={`action-dropdown-btn ${isMenuOpen ? 'active' : ''}`}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setOpenMenuId(isMenuOpen ? null : r.id)
+                            }}
+                            title="Actions"
+                            aria-label="Actions"
+                            aria-expanded={isMenuOpen}
                           >
-                            <QrCode size={14} />
-                            <span>Badge</span>
-                          </Link>
+                            <MoreVertical size={18} />
+                          </button>
+
+                          {isMenuOpen && (
+                            <div className={`action-dropdown-menu ${isNearBottom ? 'drop-up' : 'drop-down'}`}>
+                              {(isAdmin || isRegistrar) && (
+                                <button
+                                  type="button"
+                                  className="action-dropdown-item"
+                                  onClick={() => {
+                                    setOpenMenuId(null)
+                                    setSelectedRegForEdit(r)
+                                  }}
+                                >
+                                  <Pencil size={15} color="var(--color-brand-navy-800)" />
+                                  <span>Edit</span>
+                                </button>
+                              )}
+
+                              {event.has_registration_fee && isRegistrar && (
+                                <button
+                                  type="button"
+                                  className="action-dropdown-item"
+                                  onClick={() => {
+                                    setOpenMenuId(null)
+                                    setSelectedRegForPayment(r)
+                                  }}
+                                >
+                                  <DollarSign size={15} color="var(--color-success)" />
+                                  <span>Pay</span>
+                                </button>
+                              )}
+
+                              <Link
+                                to={`/events/${eventId}/print?regId=${r.id}`}
+                                className="action-dropdown-item"
+                                onClick={() => setOpenMenuId(null)}
+                              >
+                                <QrCode size={15} />
+                                <span>Badge</span>
+                              </Link>
+                            </div>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -332,6 +398,17 @@ export function AttendeesPage() {
         eventId={eventId}
         onRegistered={() => loadData()}
       />
+
+      {/* Edit Attendee Modal */}
+      {selectedRegForEdit && (
+        <EditAttendeeModal
+          isOpen={Boolean(selectedRegForEdit)}
+          onClose={() => setSelectedRegForEdit(null)}
+          registration={selectedRegForEdit}
+          eventDays={event.days || []}
+          onSaved={() => loadData()}
+        />
+      )}
 
       {/* Payment Modal */}
       {selectedRegForPayment && (

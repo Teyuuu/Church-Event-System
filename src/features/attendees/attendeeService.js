@@ -1,6 +1,7 @@
 import { supabase, isSupabaseConfigured } from '../../lib/supabaseClient'
 import { getStore, saveStore } from '../../lib/mockStore'
 import { qrService } from '../qr/qrService'
+import { auditService } from '../audit/auditService'
 
 export const attendeeService = {
   /**
@@ -32,6 +33,10 @@ export const attendeeService = {
             id,
             token_hash,
             is_active
+          ),
+          event_day_registrations (
+            event_day_id,
+            attendance_expected
           )
         `)
         .eq('event_id', eventId)
@@ -39,16 +44,21 @@ export const attendeeService = {
 
       if (error) throw error
 
-      return (data || []).map(r => ({
-        id: r.id,
-        event_id: r.event_id,
-        registration_status: r.registration_status,
-        registration_source: r.registration_source,
-        registered_at: r.registered_at,
-        payment_status: r.payment_status,
-        attendee: r.attendees,
-        qr_credential: r.qr_credentials?.[0] || null
-      }))
+      return (data || []).map(r => {
+        const dayRegs = r.event_day_registrations || []
+        return {
+          id: r.id,
+          event_id: r.event_id,
+          registration_status: r.registration_status,
+          registration_source: r.registration_source,
+          registered_at: r.registered_at,
+          payment_status: r.payment_status,
+          attendee: r.attendees,
+          qr_credential: r.qr_credentials?.[0] || null,
+          day_registrations: dayRegs,
+          selected_day_ids: dayRegs.filter(d => d.attendance_expected).map(d => d.event_day_id)
+        }
+      })
     }
 
     const store = getStore()
@@ -59,13 +69,16 @@ export const attendeeService = {
         ? store.households.find(h => h.id === attendee.household_id)
         : null
       const qrCred = store.qr_credentials.find(q => q.registration_id === r.id)
+      const dayRegs = store.event_day_registrations.filter(edr => edr.registration_id === r.id)
       return {
         ...r,
         attendee: {
           ...attendee,
           households: household
         },
-        qr_credential: qrCred
+        qr_credential: qrCred,
+        day_registrations: dayRegs,
+        selected_day_ids: dayRegs.filter(d => d.attendance_expected).map(d => d.event_day_id)
       }
     })
   },
@@ -138,6 +151,14 @@ export const attendeeService = {
       })
       if (qrErr) console.warn('QR Issuance error:', qrErr)
 
+      await auditService.logActivity({
+        action: 'ATTENDEE_REGISTERED',
+        entityType: 'attendee',
+        entityId: attendee.id,
+        details: `Registered attendee ${firstName} ${lastName} (${classification})`,
+        metadata: { source, classification, eventId }
+      })
+
       return {
         registrationId: reg.id,
         attendeeId: attendee.id,
@@ -200,6 +221,14 @@ export const attendeeService = {
 
     saveStore(store)
 
+    await auditService.logActivity({
+      action: 'ATTENDEE_REGISTERED',
+      entityType: 'attendee',
+      entityId: attendeeId,
+      details: `Registered attendee ${firstName} ${lastName} (${classification})`,
+      metadata: { source, classification, eventId }
+    })
+
     return {
       registrationId: regId,
       attendeeId,
@@ -247,6 +276,14 @@ export const attendeeService = {
       results.push(res)
     }
 
+    await auditService.logActivity({
+      action: 'FAMILY_REGISTERED',
+      entityType: 'household',
+      entityId: householdId,
+      details: `Registered family "${familyName}" with ${members.length} members`,
+      metadata: { eventId, memberCount: members.length }
+    })
+
     return { householdId, registrations: results }
   },
 
@@ -282,5 +319,216 @@ export const attendeeService = {
     }
     saveStore(store)
     return true
+  },
+
+  /**
+   * Update a registered attendee's personal details, classification, source, household, and attending days
+   */
+  async updateAttendeeRegistration({
+    registrationId,
+    attendeeId,
+    firstName,
+    middleName = '',
+    lastName,
+    contactNumber = '',
+    email = '',
+    classification = 'visitor',
+    source = 'staff_assisted',
+    familyName = undefined,
+    selectedDayIds = null
+  }) {
+    if (!firstName?.trim() || !lastName?.trim()) {
+      throw new Error('First name and last name are required.')
+    }
+
+    if (isSupabaseConfigured && supabase) {
+      let householdId = undefined
+
+      if (familyName !== undefined) {
+        const { data: currentAtt, error: fetchErr } = await supabase
+          .from('attendees')
+          .select('household_id')
+          .eq('id', attendeeId)
+          .single()
+        if (fetchErr) throw fetchErr
+
+        const trimmedFamily = familyName.trim()
+        if (trimmedFamily) {
+          if (currentAtt?.household_id) {
+            const { error: hhErr } = await supabase
+              .from('households')
+              .update({
+                family_name: trimmedFamily,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', currentAtt.household_id)
+            if (hhErr) throw hhErr
+            householdId = currentAtt.household_id
+          } else {
+            const { data: newHh, error: hhErr } = await supabase
+              .from('households')
+              .insert([{
+                family_name: trimmedFamily,
+                primary_contact: contactNumber.trim() || null
+              }])
+              .select()
+              .single()
+            if (hhErr) throw hhErr
+            householdId = newHh.id
+          }
+        } else {
+          householdId = null
+        }
+      }
+
+      const attendeeUpdate = {
+        first_name: firstName.trim(),
+        middle_name: middleName.trim() || null,
+        last_name: lastName.trim(),
+        contact_number: contactNumber.trim() || null,
+        email: email.trim() || null,
+        classification,
+        updated_at: new Date().toISOString()
+      }
+      if (householdId !== undefined) {
+        attendeeUpdate.household_id = householdId
+      }
+
+      const { data: updatedAttendee, error: attErr } = await supabase
+        .from('attendees')
+        .update(attendeeUpdate)
+        .eq('id', attendeeId)
+        .select()
+        .single()
+      if (attErr) throw attErr
+
+      const { data: updatedReg, error: regErr } = await supabase
+        .from('event_registrations')
+        .update({
+          registration_source: source,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', registrationId)
+        .select()
+        .single()
+      if (regErr) throw regErr
+
+      if (selectedDayIds) {
+        const { data: days } = await supabase
+          .from('event_days')
+          .select('id')
+          .eq('event_id', updatedReg.event_id)
+
+        if (days && days.length > 0) {
+          const dayRegs = days.map(d => ({
+            event_day_id: d.id,
+            registration_id: registrationId,
+            attendance_expected: selectedDayIds.includes(d.id)
+          }))
+          const { error: edrErr } = await supabase
+            .from('event_day_registrations')
+            .upsert(dayRegs, { onConflict: 'event_day_id,registration_id' })
+          if (edrErr) throw edrErr
+        }
+      }
+
+      await auditService.logActivity({
+        action: 'ATTENDEE_UPDATED',
+        entityType: 'attendee',
+        entityId: attendeeId,
+        details: `Updated details/spelling for attendee ${firstName} ${lastName}`,
+        metadata: { classification, registrationId }
+      })
+
+      return {
+        registration: updatedReg,
+        attendee: updatedAttendee
+      }
+    }
+
+    // Mock Store implementation
+    const store = getStore()
+    const reg = store.event_registrations.find(r => r.id === registrationId)
+    if (!reg) {
+      throw new Error('Registration record not found.')
+    }
+
+    const targetAttendeeId = attendeeId || reg.attendee_id
+    const attendee = store.attendees.find(a => a.id === targetAttendeeId)
+    if (!attendee) {
+      throw new Error('Attendee record not found.')
+    }
+
+    if (familyName !== undefined) {
+      const trimmedFamily = familyName.trim()
+      if (trimmedFamily) {
+        if (attendee.household_id) {
+          const hh = store.households.find(h => h.id === attendee.household_id)
+          if (hh) {
+            hh.family_name = trimmedFamily
+          } else {
+            store.households.push({
+              id: attendee.household_id,
+              family_name: trimmedFamily,
+              primary_contact: contactNumber.trim() || null
+            })
+          }
+        } else {
+          const newHhId = `h-${Date.now()}`
+          store.households.push({
+            id: newHhId,
+            family_name: trimmedFamily,
+            primary_contact: contactNumber.trim() || null
+          })
+          attendee.household_id = newHhId
+        }
+      } else {
+        attendee.household_id = null
+      }
+    }
+
+    attendee.first_name = firstName.trim()
+    attendee.middle_name = middleName.trim() || null
+    attendee.last_name = lastName.trim()
+    attendee.contact_number = contactNumber.trim() || null
+    attendee.email = email.trim() || null
+    attendee.classification = classification
+
+    reg.registration_source = source
+
+    if (selectedDayIds) {
+      const eventDays = store.event_days.filter(d => d.event_id === reg.event_id)
+      eventDays.forEach(d => {
+        const expected = selectedDayIds.includes(d.id)
+        const existingIdx = store.event_day_registrations.findIndex(
+          edr => edr.event_day_id === d.id && edr.registration_id === registrationId
+        )
+        if (existingIdx !== -1) {
+          store.event_day_registrations[existingIdx].attendance_expected = expected
+        } else {
+          store.event_day_registrations.push({
+            id: `edr-${Date.now()}-${d.id}`,
+            event_day_id: d.id,
+            registration_id: registrationId,
+            attendance_expected: expected
+          })
+        }
+      })
+    }
+
+    saveStore(store)
+
+    await auditService.logActivity({
+      action: 'ATTENDEE_UPDATED',
+      entityType: 'attendee',
+      entityId: attendee.id,
+      details: `Updated details/spelling for attendee ${firstName} ${lastName}`,
+      metadata: { classification, registrationId }
+    })
+
+    return {
+      registration: { ...reg },
+      attendee: { ...attendee }
+    }
   }
 }

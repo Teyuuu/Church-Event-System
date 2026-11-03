@@ -11,6 +11,8 @@ import {
   UtensilsCrossed,
   FileSpreadsheet,
   DollarSign,
+  UserCog,
+  History,
   X
 } from 'lucide-react'
 
@@ -35,6 +37,18 @@ export function Sidebar({ isOpen, onClose }) {
       path: '/events',
       icon: Calendar,
       roles: ['admin', 'registrar', 'usher', 'kitchen']
+    },
+    {
+      label: 'Staff Accounts',
+      path: '/admin/accounts',
+      icon: UserCog,
+      roles: ['admin']
+    },
+    {
+      label: 'Audit Activity Log',
+      path: '/admin/audit',
+      icon: History,
+      roles: ['admin']
     },
     ...(activeEventId ? [
       {

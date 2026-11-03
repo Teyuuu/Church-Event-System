@@ -1,22 +1,16 @@
-import React, { useState } from 'react'
+import React from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../features/auth/AuthContext'
 import { StatusBadge } from '../ui/StatusBadge'
-import { Menu, X, LogOut, Shield, ChevronDown } from 'lucide-react'
+import { Menu, LogOut, User } from 'lucide-react'
 
 export function Header({ onToggleSidebar }) {
-  const { profile, role, logout, switchDemoRole } = useAuth()
+  const { profile, role, logout } = useAuth()
   const navigate = useNavigate()
-  const [showRoleMenu, setShowRoleMenu] = useState(false)
 
   const handleLogout = async () => {
     await logout()
     navigate('/login')
-  }
-
-  const handleRoleChange = (newRole) => {
-    switchDemoRole(newRole)
-    setShowRoleMenu(false)
   }
 
   return (
@@ -96,81 +90,22 @@ export function Header({ onToggleSidebar }) {
           </Link>
         </div>
 
-        {/* Right: User Profile & Role Switcher */}
+        {/* Right: Logged-in User Profile & Logout */}
         {profile && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            {/* Role dropdown button */}
-            <div style={{ position: 'relative' }}>
-              <button
-                type="button"
-                onClick={() => setShowRoleMenu(!showRoleMenu)}
-                style={{
-                  background: 'rgba(255, 255, 255, 0.1)',
-                  border: '1px solid rgba(255, 222, 0, 0.4)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '0.35rem 0.65rem',
-                  color: '#FFFFFF',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem',
-                  fontSize: '0.85rem'
-                }}
-              >
-                <span style={{ fontWeight: 600 }}>{profile.full_name}</span>
-                <StatusBadge status={role} />
-                <ChevronDown size={14} color="var(--color-brand-yellow-500)" />
-              </button>
-              {/* Role switch dropdown */}
-              {showRoleMenu && (
-                <div style={{
-                  position: 'absolute',
-                  right: 0,
-                  top: '110%',
-                  background: '#FFFFFF',
-                  borderRadius: 'var(--radius-sm)',
-                  boxShadow: 'var(--shadow-lg)',
-                  border: '1px solid var(--color-border)',
-                  width: '180px',
-                  zIndex: 100,
-                  overflow: 'hidden'
-                }}>
-                  <div style={{
-                    padding: '0.5rem 0.75rem',
-                    fontSize: '0.7rem',
-                    textTransform: 'uppercase',
-                    fontWeight: 700,
-                    color: 'var(--color-text-muted)',
-                    background: 'var(--color-bg-muted)'
-                  }}>
-                    Switch Role Demo
-                  </div>
-                  {['admin', 'registrar', 'usher', 'kitchen'].map((r) => (
-                    <button
-                      key={r}
-                      type="button"
-                      onClick={() => handleRoleChange(r)}
-                      style={{
-                        width: '100%',
-                        textAlign: 'left',
-                        padding: '0.6rem 0.75rem',
-                        border: 'none',
-                        background: role === r ? 'var(--color-brand-gold-50)' : 'transparent',
-                        color: 'var(--color-brand-navy-900)',
-                        fontWeight: role === r ? 700 : 500,
-                        cursor: 'pointer',
-                        fontSize: '0.85rem',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between'
-                      }}
-                    >
-                      <span style={{ textTransform: 'capitalize' }}>{r}</span>
-                      {role === r && <span style={{ color: 'var(--color-brand-gold-600)' }}>✓</span>}
-                    </button>
-                  ))}
-                </div>
-              )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              background: 'rgba(255, 255, 255, 0.1)',
+              border: '1px solid rgba(255, 222, 0, 0.35)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '0.35rem 0.75rem',
+              fontSize: '0.85rem'
+            }}>
+              <User size={15} color="var(--color-brand-yellow-500)" />
+              <span style={{ fontWeight: 600 }}>{profile.full_name}</span>
+              <StatusBadge status={role} />
             </div>
 
             {/* Logout button */}
@@ -180,16 +115,30 @@ export function Header({ onToggleSidebar }) {
               title="Sign Out"
               aria-label="Sign Out"
               style={{
-                background: 'transparent',
-                border: 'none',
-                color: 'rgba(255, 255, 255, 0.75)',
+                background: 'rgba(255, 255, 255, 0.08)',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                borderRadius: 'var(--radius-sm)',
+                color: '#FFFFFF',
                 cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
-                padding: '0.35rem'
+                gap: '0.4rem',
+                padding: '0.35rem 0.65rem',
+                fontSize: '0.85rem',
+                fontWeight: 600,
+                transition: 'all var(--transition-fast)'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = 'var(--color-danger)'
+                e.currentTarget.style.borderColor = 'var(--color-danger)'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.08)'
+                e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.2)'
               }}
             >
-              <LogOut size={18} />
+              <LogOut size={15} />
+              <span className="hidden sm:inline">Sign Out</span>
             </button>
           </div>
         )}

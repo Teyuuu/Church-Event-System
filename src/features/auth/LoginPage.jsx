@@ -1,18 +1,17 @@
 import React, { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from './AuthContext'
-import { DEMO_ACCOUNTS } from './authService'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
-import { ShieldCheck, UserCheck, Utensils, QrCode } from 'lucide-react'
+import { Lock, Mail, ShieldAlert } from 'lucide-react'
 
 export function LoginPage() {
-  const [email, setEmail] = useState('admin@berean.org')
-  const [password, setPassword] = useState('password123')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  const { login, switchDemoRole } = useAuth()
+  const { login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const from = location.state?.from?.pathname || '/dashboard'
@@ -29,11 +28,6 @@ export function LoginPage() {
     } finally {
       setIsSubmitting(false)
     }
-  }
-
-  const handleQuickRole = (role) => {
-    switchDemoRole(role)
-    navigate(from, { replace: true })
   }
 
   return (
@@ -89,6 +83,9 @@ export function LoginPage() {
         <div style={{ padding: '1.75rem 1.5rem' }}>
           {error && (
             <div style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: '0.5rem',
               backgroundColor: 'var(--color-danger-bg)',
               color: 'var(--color-danger)',
               border: '1px solid #FECACA',
@@ -97,7 +94,8 @@ export function LoginPage() {
               fontSize: '0.875rem',
               marginBottom: '1.25rem'
             }}>
-              {error}
+              <ShieldAlert size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
+              <span>{error}</span>
             </div>
           )}
 
@@ -107,8 +105,9 @@ export function LoginPage() {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="e.g. volunteer@berean.org"
+              placeholder="e.g. staff@berean.org"
               required
+              autoFocus
             />
             <Input
               label="Password"
@@ -124,63 +123,23 @@ export function LoginPage() {
               variant="primary"
               loading={isSubmitting}
               className="btn-lg"
-              style={{ width: '100%', marginTop: '0.5rem' }}
+              style={{ width: '100%', marginTop: '0.75rem' }}
             >
               Sign In to Staff Portal
             </Button>
           </form>
 
-          {/* Quick volunteer role switcher for testing */}
-          <div style={{ marginTop: '2rem', paddingTop: '1.5rem', borderTop: '1px dashed var(--color-border)' }}>
-            <p style={{
-              fontSize: '0.775rem',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em',
-              fontWeight: 700,
-              color: 'var(--color-text-muted)',
-              marginBottom: '0.75rem',
-              textAlign: 'center'
-            }}>
-              Instant Role Demo Login
+          <div style={{
+            marginTop: '1.75rem',
+            paddingTop: '1.25rem',
+            borderTop: '1px solid var(--color-border)',
+            textAlign: 'center',
+            fontSize: '0.8rem',
+            color: 'var(--color-text-muted)'
+          }}>
+            <p>
+              Authorized personnel only. Contact the church administrator if you need your account credentials or role updated.
             </p>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => handleQuickRole('admin')}
-                style={{ justifyContent: 'flex-start', fontSize: '0.8rem' }}
-              >
-                <ShieldCheck size={16} color="var(--color-brand-navy-900)" />
-                Admin
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => handleQuickRole('registrar')}
-                style={{ justifyContent: 'flex-start', fontSize: '0.8rem' }}
-              >
-                <UserCheck size={16} color="var(--color-brand-gold-500)" />
-                Registrar
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => handleQuickRole('usher')}
-                style={{ justifyContent: 'flex-start', fontSize: '0.8rem' }}
-              >
-                <QrCode size={16} color="var(--color-info)" />
-                Usher / Scanner
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => handleQuickRole('kitchen')}
-                style={{ justifyContent: 'flex-start', fontSize: '0.8rem' }}
-              >
-                <Utensils size={16} color="var(--color-success)" />
-                Kitchen Team
-              </Button>
-            </div>
           </div>
         </div>
       </div>

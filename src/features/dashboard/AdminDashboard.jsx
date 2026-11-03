@@ -18,7 +18,9 @@ import {
   FileSpreadsheet,
   Plus,
   RefreshCw,
-  ArrowRight
+  ArrowRight,
+  UserCog,
+  History
 } from 'lucide-react'
 
 export function AdminDashboard() {
@@ -157,6 +159,16 @@ export function AdminDashboard() {
       <div className="card" style={{ marginBottom: '1.5rem', background: '#FFFFFF' }}>
         <div className="card-header">
           <h3>Quick Volunteer Operations</h3>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <Link to="/admin/accounts" className="btn btn-secondary btn-sm">
+              <UserCog size={15} />
+              <span>Manage Staff Accounts</span>
+            </Link>
+            <Link to="/admin/audit" className="btn btn-secondary btn-sm">
+              <History size={15} />
+              <span>Audit Log</span>
+            </Link>
+          </div>
         </div>
         <div style={{
           display: 'grid',

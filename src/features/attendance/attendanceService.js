@@ -1,5 +1,6 @@
 import { supabase, isSupabaseConfigured } from '../../lib/supabaseClient'
 import { getStore, saveStore } from '../../lib/mockStore'
+import { auditService } from '../audit/auditService'
 
 export const attendanceService = {
   /**
@@ -153,6 +154,14 @@ export const attendanceService = {
 
     const totalConfirmed = store.attendance_records.filter(a => a.event_day_id === eventDayId).length
 
+    await auditService.logActivity({
+      action: 'CHECKIN_QR',
+      entityType: 'attendance',
+      entityId: newRecord.id,
+      details: `QR Code Check-In: ${attendeeName} checked in for Day ${day.day_number}`,
+      metadata: { dayNumber: day.day_number, classification: attendee?.classification }
+    })
+
     return {
       success: true,
       status: 'success',
@@ -192,6 +201,14 @@ export const attendanceService = {
       if (rec) {
         rec.check_in_method = 'manual'
         saveStore(store)
+
+        await auditService.logActivity({
+          action: 'CHECKIN_MANUAL',
+          entityType: 'attendance',
+          entityId: rec.id,
+          details: `Manual Check-In: ${res.attendee_name} checked in for Day ${res.day_number}`,
+          metadata: { dayNumber: res.day_number, classification: res.classification }
+        })
       }
     }
     return res

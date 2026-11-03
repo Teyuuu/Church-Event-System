@@ -1,5 +1,6 @@
 import { supabase, isSupabaseConfigured } from '../../lib/supabaseClient'
 import { getStore, saveStore } from '../../lib/mockStore'
+import { auditService } from '../audit/auditService'
 
 export const paymentService = {
   /**
@@ -15,6 +16,15 @@ export const paymentService = {
         p_notes: notes || null
       })
       if (error) throw error
+
+      await auditService.logActivity({
+        action: 'PAYMENT_RECORDED',
+        entityType: 'payment',
+        entityId: data?.payment_id || null,
+        details: `Recorded ₱${parseFloat(amount).toFixed(2)} (${paymentMethod}) payment for registration ${registrationId}`,
+        metadata: { amount: parseFloat(amount), paymentMethod, referenceNumber }
+      })
+
       return data
     }
 
@@ -51,6 +61,17 @@ export const paymentService = {
     }
 
     saveStore(store)
+
+    const attendee = store.attendees.find(a => a.id === reg.attendee_id)
+    const attName = attendee ? `${attendee.first_name} ${attendee.last_name}` : registrationId
+
+    await auditService.logActivity({
+      action: 'PAYMENT_RECORDED',
+      entityType: 'payment',
+      entityId: newPayment.id,
+      details: `Recorded ₱${parseFloat(amount).toFixed(2)} (${paymentMethod}) payment for ${attName}`,
+      metadata: { amount: parseFloat(amount), paymentMethod, referenceNumber, attendeeName: attName }
+    })
 
     return {
       success: true,

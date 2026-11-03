@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react'
-import { authService, DEMO_ACCOUNTS } from './authService'
+import { authService } from './authService'
 
 const AuthContext = createContext(null)
 
@@ -8,30 +8,36 @@ export function AuthProvider({ children }) {
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    async function initAuth() {
-      try {
-        const session = await authService.getCurrentSession()
-        if (session) {
-          setCurrentUser(session.user)
-          setProfile(session.profile)
-        }
-      } catch (err) {
-        console.error('Failed to restore auth session:', err)
-      } finally {
-        setLoading(false)
+  const restoreSession = async () => {
+    try {
+      const session = await authService.getCurrentSession()
+      if (session) {
+        setCurrentUser(session.user)
+        setProfile(session.profile)
+      } else {
+        setCurrentUser(null)
+        setProfile(null)
       }
+    } catch (err) {
+      console.error('Failed to restore auth session:', err)
+      setCurrentUser(null)
+      setProfile(null)
+    } finally {
+      setLoading(false)
     }
-    initAuth()
+  }
+
+  useEffect(() => {
+    restoreSession()
   }, [])
 
   const login = async (email, password) => {
     setLoading(true)
     try {
-      const { user, profile } = await authService.login(email, password)
-      setCurrentUser(user)
-      setProfile(profile)
-      return { user, profile }
+      const session = await authService.login(email, password)
+      setCurrentUser(session.user)
+      setProfile(session.profile)
+      return session
     } finally {
       setLoading(false)
     }
@@ -43,18 +49,6 @@ export function AuthProvider({ children }) {
     setProfile(null)
   }
 
-  // Quick switch role utility for review and testing
-  const switchDemoRole = (role) => {
-    const acc = DEMO_ACCOUNTS.find(a => a.role === role) || DEMO_ACCOUNTS[0]
-    const demoSession = {
-      user: { id: acc.id, email: acc.email },
-      profile: acc
-    }
-    localStorage.setItem('berean_demo_session', JSON.stringify(demoSession))
-    setCurrentUser(demoSession.user)
-    setProfile(acc)
-  }
-
   return (
     <AuthContext.Provider
       value={{
@@ -64,7 +58,7 @@ export function AuthProvider({ children }) {
         loading,
         login,
         logout,
-        switchDemoRole,
+        refreshSession: restoreSession,
         isAdmin: profile?.role === 'admin',
         isRegistrar: profile?.role === 'registrar' || profile?.role === 'admin',
         isUsher: profile?.role === 'usher' || profile?.role === 'admin',

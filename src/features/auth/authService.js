@@ -1,46 +1,25 @@
 import { supabase, isSupabaseConfigured } from '../../lib/supabaseClient'
+import { getStore } from '../../lib/mockStore'
+import { auditService } from '../audit/auditService'
 
-// Preset demo accounts for local preview & testing without Supabase credentials
-export const DEMO_ACCOUNTS = [
-  {
-    id: 'demo-admin-01',
-    email: 'admin@berean.org',
-    full_name: 'Pastor Samuel (Admin)',
-    role: 'admin',
-    is_active: true
-  },
-  {
-    id: 'demo-registrar-01',
-    email: 'registrar@berean.org',
-    full_name: 'Sis. Mary (Registrar)',
-    role: 'registrar',
-    is_active: true
-  },
-  {
-    id: 'demo-usher-01',
-    email: 'usher@berean.org',
-    full_name: 'Bro. Caleb (Usher/Check-In)',
-    role: 'usher',
-    is_active: true
-  },
-  {
-    id: 'demo-kitchen-01',
-    email: 'kitchen@berean.org',
-    full_name: 'Bro. Peter (Kitchen Lead)',
-    role: 'kitchen',
-    is_active: true
-  }
-]
+const SESSION_KEY = 'berean_auth_session'
 
 export const authService = {
   /**
    * Log in user with email & password
    */
   async login(email, password) {
+    const cleanEmail = (email || '').trim().toLowerCase()
+    const cleanPassword = (password || '').trim()
+
+    if (!cleanEmail || !cleanPassword) {
+      throw new Error('Please enter both your email address and password.')
+    }
+
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password
+        email: cleanEmail,
+        password: cleanPassword
       })
       if (error) throw error
 
@@ -52,30 +31,101 @@ export const authService = {
         .single()
 
       if (profileErr) throw profileErr
-      return { user: data.user, profile }
+
+      if (profile && profile.is_active === false) {
+        await supabase.auth.signOut()
+        throw new Error('This account has been deactivated. Please contact an administrator.')
+      }
+
+      const session = { user: data.user, profile }
+      if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(SESSION_KEY, JSON.stringify(session))
     }
 
-    // Fallback Demo authentication
-    const matched = DEMO_ACCOUNTS.find(
-      acc => acc.email.toLowerCase() === (email || '').trim().toLowerCase()
-    ) || DEMO_ACCOUNTS[0]
+      await auditService.logActivity({
+        action: 'USER_LOGIN',
+        entityType: 'session',
+        entityId: profile.id,
+        details: `Staff member ${profile.full_name} (${profile.role}) signed in successfully`,
+        actor: profile
+      })
 
-    const demoSession = {
+      return session
+    }
+
+    // Local / Offline Store Authentication
+    const store = getStore()
+    const users = store.users || []
+
+    const matched = users.find(
+      u => u.email.toLowerCase() === cleanEmail
+    )
+
+    if (!matched) {
+      throw new Error('Invalid email or password. Please check your credentials.')
+    }
+
+    if (matched.is_active === false) {
+      throw new Error('This account has been deactivated. Please contact an administrator.')
+    }
+
+    const expectedPass = matched.password || 'password123'
+    if (cleanPassword !== expectedPass) {
+      throw new Error('Invalid email or password. Please check your credentials.')
+    }
+
+    const session = {
       user: { id: matched.id, email: matched.email },
-      profile: matched
+      profile: {
+        id: matched.id,
+        full_name: matched.full_name,
+        email: matched.email,
+        role: matched.role,
+        is_active: matched.is_active !== false
+      }
     }
-    localStorage.setItem('berean_demo_session', JSON.stringify(demoSession))
-    return demoSession
+
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(SESSION_KEY, JSON.stringify(session))
+    }
+
+    await auditService.logActivity({
+      action: 'USER_LOGIN',
+      entityType: 'session',
+      entityId: matched.id,
+      details: `Staff member ${matched.full_name} (${matched.role}) signed in successfully`,
+      actor: matched
+    })
+
+    return session
   },
 
   /**
    * Log out current user
    */
   async logout() {
-    if (isSupabaseConfigured && supabase) {
-      await supabase.auth.signOut()
+    const session = await this.getCurrentSession()
+    if (session?.profile) {
+      await auditService.logActivity({
+        action: 'USER_LOGOUT',
+        entityType: 'session',
+        entityId: session.profile.id,
+        details: `Staff member ${session.profile.full_name} signed out`,
+        actor: session.profile
+      })
     }
-    localStorage.removeItem('berean_demo_session')
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.auth.signOut()
+      } catch (err) {
+        console.warn('Supabase signout notice:', err)
+      }
+    }
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(SESSION_KEY)
+      localStorage.removeItem('berean_demo_session')
+    }
   },
 
   /**
@@ -92,23 +142,40 @@ export const authService = {
         .eq('id', session.user.id)
         .single()
 
+      if (!profile || profile.is_active === false) return null
       return { user: session.user, profile }
     }
 
-    // Demo Session check
-    const stored = localStorage.getItem('berean_demo_session')
+    // Local Session check
+    if (typeof localStorage === 'undefined') {
+      return null
+    }
+
+    const stored = localStorage.getItem(SESSION_KEY) || localStorage.getItem('berean_demo_session')
     if (stored) {
       try {
-        return JSON.parse(stored)
+        const session = JSON.parse(stored)
+        // Verify account is still active in store
+        const store = getStore()
+        const userInStore = (store.users || []).find(u => u.id === session.user?.id)
+        if (userInStore) {
+          if (userInStore.is_active === false) {
+            localStorage.removeItem(SESSION_KEY)
+            localStorage.removeItem('berean_demo_session')
+            return null
+          }
+          // Refresh profile role and name if changed
+          session.profile.full_name = userInStore.full_name
+          session.profile.role = userInStore.role
+          session.profile.is_active = userInStore.is_active !== false
+        }
+        return session
       } catch {
         return null
       }
     }
-    // Default to admin for convenient out-of-the-box local preview
-    const defaultAcc = DEMO_ACCOUNTS[0]
-    return {
-      user: { id: defaultAcc.id, email: defaultAcc.email },
-      profile: defaultAcc
-    }
+
+    // No default auto-login; user must log in through LoginPage
+    return null
   }
 }

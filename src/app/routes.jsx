@@ -14,6 +14,8 @@ import { ScannerPage } from '../features/attendance/ScannerPage'
 import { DailyAttendancePage } from '../features/attendance/DailyAttendancePage'
 import { PaymentsPage } from '../features/payments/PaymentsPage'
 import { ReportsPage } from '../features/reports/ReportsPage'
+import { AccountsPage } from '../features/accounts/AccountsPage'
+import { AuditPage } from '../features/audit/AuditPage'
 
 export function AppRoutes() {
   return (
@@ -127,6 +129,26 @@ export function AppRoutes() {
           element={
             <ProtectedRoute allowedRoles={['admin', 'kitchen']}>
               <KitchenDashboard />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Staff Account Management */}
+        <Route
+          path="admin/accounts"
+          element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AccountsPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* System Activity & Audit Trail */}
+        <Route
+          path="admin/audit"
+          element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AuditPage />
             </ProtectedRoute>
           }
         />

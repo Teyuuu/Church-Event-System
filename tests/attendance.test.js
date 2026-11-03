@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { attendanceService } from '../src/features/attendance/attendanceService'
+import { attendeeService } from '../src/features/attendees/attendeeService'
 import { resetStore, getStore } from '../src/lib/mockStore'
 
 describe('Berean Event Check-In Engine', () => {
@@ -87,5 +88,40 @@ describe('Berean Event Check-In Engine', () => {
 
     expect(res.success).toBe(false)
     expect(res.status).toBe('payment_required')
+  })
+
+  it('allows editing a registered attendee details and preserves QR check-in validity', async () => {
+    const store = getStore()
+    const cred = store.qr_credentials.find(q => q.registration_id === 'reg-1')
+
+    await attendeeService.updateAttendeeRegistration({
+      registrationId: 'reg-1',
+      attendeeId: 'att-1',
+      firstName: 'Benjamine',
+      middleName: 'Cruz',
+      lastName: 'Santos Jr.',
+      contactNumber: '0917-999-8888',
+      email: 'benjamine.santos@example.com',
+      classification: 'worker',
+      source: 'paper',
+      familyName: 'Santos-Cruz Family',
+      selectedDayIds: ['day-1', 'day-2']
+    })
+
+    const regs = await attendeeService.getEventRegistrations('evt-2026-camp')
+    const updatedReg = regs.find(r => r.id === 'reg-1')
+
+    expect(updatedReg.attendee.first_name).toBe('Benjamine')
+    expect(updatedReg.attendee.middle_name).toBe('Cruz')
+    expect(updatedReg.attendee.last_name).toBe('Santos Jr.')
+    expect(updatedReg.attendee.contact_number).toBe('0917-999-8888')
+    expect(updatedReg.attendee.classification).toBe('worker')
+    expect(updatedReg.registration_source).toBe('paper')
+    expect(updatedReg.attendee.households.family_name).toBe('Santos-Cruz Family')
+    expect(updatedReg.selected_day_ids).toEqual(['day-1', 'day-2'])
+
+    const checkinRes = await attendanceService.verifyAndCheckin(cred.payload, 'day-1')
+    expect(checkinRes.success).toBe(true)
+    expect(checkinRes.attendee_name).toBe('Benjamine Santos Jr.')
   })
 })
