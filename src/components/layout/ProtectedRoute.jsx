@@ -1,9 +1,9 @@
 import React from 'react'
-import { Navigate, useLocation } from 'react-router-dom'
+import { Navigate, useLocation, Link } from 'react-router-dom'
 import { useAuth } from '../../features/auth/AuthContext'
 import { LoadingState } from '../ui/LoadingState'
 import { ShieldAlert } from 'lucide-react'
-import { Button } from '../ui/Button'
+import { getHomeRoute } from '../../utils/permissions'
 
 export function ProtectedRoute({ children, allowedRoles }) {
   const { currentUser, role, loading } = useAuth()
@@ -19,36 +19,18 @@ export function ProtectedRoute({ children, allowedRoles }) {
 
   if (allowedRoles && !allowedRoles.includes(role)) {
     return (
-      <div style={{
-        maxWidth: '500px',
-        margin: '4rem auto',
-        padding: '2rem',
-        background: '#FFFFFF',
-        borderRadius: 'var(--radius-md)',
-        border: '1px solid var(--color-border)',
-        textAlign: 'center',
-        boxShadow: 'var(--shadow-sm)'
-      }}>
-        <div style={{
-          width: '56px',
-          height: '56px',
-          borderRadius: '50%',
-          background: 'var(--color-danger-bg)',
-          color: 'var(--color-danger)',
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          marginBottom: '1rem'
-        }}>
-          <ShieldAlert size={32} />
+      <div className="card" style={{ maxWidth: '500px', margin: '3rem auto', padding: '2rem', textAlign: 'center' }} role="alert">
+        <div className="empty-state-icon is-error" style={{ margin: '0 auto 1rem' }} aria-hidden="true">
+          <ShieldAlert size={30} />
         </div>
-        <h2 style={{ fontSize: '1.25rem', marginBottom: '0.5rem' }}>Access Restricted</h2>
-        <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
-          Your current account role (<strong>{role}</strong>) does not have permission to view this section.
+        <h1 style={{ fontSize: '1.25rem', marginBottom: '0.5rem' }}>Access Restricted</h1>
+        <p className="text-muted" style={{ fontSize: '0.9rem', marginBottom: '1.5rem' }}>
+          Your account role (<strong>{role}</strong>) does not have permission to view this section.
+          Contact a church administrator if you need access.
         </p>
-        <Button variant="primary" onClick={() => window.history.back()}>
-          Return to Previous Page
-        </Button>
+        <Link to={getHomeRoute(role)} className="btn btn-primary">
+          Go to my home page
+        </Link>
       </div>
     )
   }

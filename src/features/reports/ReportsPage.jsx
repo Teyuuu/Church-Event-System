@@ -1,168 +1,199 @@
-import React, { useState, useEffect } from 'react'
-import { useParams, Link } from 'react-router-dom'
-import { eventService } from '../events/eventService'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { useOutletContext } from 'react-router-dom'
 import { reportService } from './reportService'
+import { attendeeService } from '../attendees/attendeeService'
 import { Button } from '../../components/ui/Button'
 import { StatusBadge } from '../../components/ui/StatusBadge'
 import { LoadingState } from '../../components/ui/LoadingState'
-import { formatDate } from '../../utils/date'
-import {
-  FileSpreadsheet,
-  Download,
-  ArrowLeft,
-  Users,
-  CheckCircle2,
-  DollarSign,
-  TrendingUp,
-  RefreshCw
-} from 'lucide-react'
+import { ErrorState, getErrorMessage } from '../../components/ui/ErrorState'
+import { SectionHeader } from '../../components/ui/PageHeader'
+import { StatCard } from '../../components/ui/StatCard'
+import { CLASSIFICATION_OPTIONS } from '../attendees/classifications'
+import { formatDate, formatDateTime } from '../../utils/date'
+import { Download, RefreshCw, Printer } from 'lucide-react'
+
+const peso = (n) => `₱${Number(n || 0).toFixed(2)}`
+
+function DayChart({ days }) {
+  const max = Math.max(1, ...days.map(d => Math.max(d.expected, d.confirmed)))
+  return (
+    <div>
+      <div className="chart-legend" aria-hidden="true">
+        <span><span className="legend-swatch" style={{ background: 'var(--color-brand-navy-800)' }} />Checked in</span>
+        <span><span className="legend-swatch" style={{ background: 'var(--color-brand-yellow-100)', border: '2px solid var(--color-brand-gold-500)' }} />Expected</span>
+      </div>
+      <div className="bar-chart" role="list" aria-label="Expected vs checked-in attendees per day">
+        {days.map(d => (
+          <div key={d.id} role="listitem" aria-label={`Day ${d.day_number}: ${d.confirmed} of ${d.expected} checked in (${d.attendance_percentage}%)`}>
+            <div className="bar-row-label">
+              <span>Day {d.day_number} · {formatDate(d.date)}</span>
+              <span>{d.confirmed} / {d.expected} ({d.attendance_percentage}%)</span>
+            </div>
+            <div className="bar-track">
+              <div className="bar-fill bar-expected" style={{ width: `${(d.expected / max) * 100}%` }} />
+              <div className="bar-fill" style={{ width: `${(d.confirmed / max) * 100}%` }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 export function ReportsPage() {
-  const { eventId } = useParams()
-  const [event, setEvent] = useState(null)
+  const { event } = useOutletContext()
+  const eventId = event.id
   const [multiDayReport, setMultiDayReport] = useState(null)
   const [financialReport, setFinancialReport] = useState(null)
+  const [registrations, setRegistrations] = useState([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
-  const loadReports = async () => {
+  const loadReports = useCallback(async () => {
     setLoading(true)
+    setError(null)
     try {
-      const [evt, multi, fin] = await Promise.all([
-        eventService.getEventById(eventId),
+      const [multi, fin, regs] = await Promise.all([
         reportService.getMultiDayReport(eventId),
-        reportService.getFinancialReport(eventId)
+        reportService.getFinancialReport(eventId),
+        attendeeService.getEventRegistrations(eventId).catch(() => [])
       ])
-      setEvent(evt)
       setMultiDayReport(multi)
       setFinancialReport(fin)
+      setRegistrations(regs)
     } catch (err) {
-      console.error('Failed to load event reports:', err)
+      setError(err)
     } finally {
       setLoading(false)
     }
-  }
+  }, [eventId])
 
   useEffect(() => {
     loadReports()
-  }, [eventId])
+  }, [loadReports])
 
-  if (loading) return <LoadingState message="Compiling church event analytics..." />
-  if (!event) return <div>Event not found.</div>
+  const byClassification = useMemo(() => {
+    const counts = {}
+    registrations.forEach(r => {
+      const c = r.attendee?.classification || 'other'
+      counts[c] = (counts[c] || 0) + 1
+    })
+    const labelOf = (v) => CLASSIFICATION_OPTIONS.find(o => o.value === v)?.label || v
+    return Object.entries(counts)
+      .map(([key, count]) => ({ key, label: labelOf(key), count }))
+      .sort((a, b) => b.count - a.count)
+  }, [registrations])
 
-  const handleExportAttendees = () => {
-    reportService.exportRegistrationsCsv(eventId)
-  }
+  if (loading) return <LoadingState message="Compiling event reports..." />
+  if (error) return <ErrorState message={getErrorMessage(error)} onRetry={loadReports} />
+
+  const days = multiDayReport?.dayBreakdown || []
+  const total = registrations.length || multiDayReport?.totalRegistrations || 0
+  const maxClass = Math.max(1, ...byClassification.map(c => c.count))
 
   return (
-    <div>
-      {/* Header and Controls */}
-      <div style={{ marginBottom: '1.5rem' }}>
-        <Link to="/events" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', color: 'var(--color-brand-navy-800)', textDecoration: 'none', fontWeight: 600, fontSize: '0.9rem', marginBottom: '0.5rem' }}>
-          <ArrowLeft size={16} />
-          <span>Back to Events</span>
-        </Link>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
-          <div>
-            <h1>Attendance & Financial Reports</h1>
-            <p className="text-muted">
-              {event.name} — Comprehensive Event Analytics & CSV Exports
-            </p>
-          </div>
-
-          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-            <Button variant="secondary" onClick={handleExportAttendees}>
+    <div className="report-page">
+      <SectionHeader
+        title="Attendance & Financial Reports"
+        subtitle={`Generated ${formatDateTime(new Date())}`}
+        actions={
+          <div className="no-print" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <Button variant="secondary" onClick={() => reportService.exportRegistrationsCsv(eventId)}>
               <Download size={16} />
-              <span>Export Attendees CSV</span>
+              <span>Attendees CSV</span>
             </Button>
-            <Button variant="secondary" onClick={loadReports}>
+            <Button variant="secondary" onClick={() => window.print()}>
+              <Printer size={16} />
+              <span>Print Report</span>
+            </Button>
+            <Button variant="secondary" onClick={loadReports} aria-label="Refresh reports">
               <RefreshCw size={16} />
-              <span>Refresh Reports</span>
             </Button>
           </div>
-        </div>
-      </div>
+        }
+      />
 
-      {/* Critical Multi-Day Attendance Metrics Grid */}
-      <div className="stat-grid" style={{ marginBottom: '1.5rem' }}>
-        <div className="stat-card">
-          <span className="stat-title">Unique Attendees Arrived</span>
-          <span className="stat-value" style={{ color: 'var(--color-brand-navy-900)' }}>
-            {multiDayReport?.totalUniqueAttendees || 0}
-          </span>
-          <span className="stat-subtitle">Distinct individuals who attended ≥1 day</span>
-        </div>
+      <h2 className="print-only" style={{ marginBottom: '1rem' }}>{event.name}</h2>
 
-        <div className="stat-card">
-          <span className="stat-title">Total Daily Check-Ins</span>
-          <span className="stat-value" style={{ color: 'var(--color-brand-gold-600)' }}>
-            {multiDayReport?.totalDailyCheckins || 0}
-          </span>
-          <span className="stat-subtitle">Cumulative scans across all event days</span>
-        </div>
-
-        <div className="stat-card">
-          <span className="stat-title">Total Registered</span>
-          <span className="stat-value">
-            {multiDayReport?.totalRegistrations || 0}
-          </span>
-          <span className="stat-subtitle">Confirmed event registrants</span>
-        </div>
-
+      <div className="stat-grid">
+        <StatCard title="Unique Attendees" value={multiDayReport?.totalUniqueAttendees || 0} subtitle="Attended at least one day" />
+        <StatCard title="Total Check-Ins" value={multiDayReport?.totalDailyCheckins || 0} tone="gold" subtitle="All days combined" />
+        <StatCard title="Registered" value={multiDayReport?.totalRegistrations || 0} subtitle="Confirmed registrants" />
         {event.has_registration_fee && (
-          <div className="stat-card">
-            <span className="stat-title">Total Verified Collected</span>
-            <span className="stat-value" style={{ color: 'var(--color-success)' }}>
-              ₱{financialReport?.totalCollected?.toFixed(2) || '0.00'}
-            </span>
-            <span className="stat-subtitle">Standard fee: ₱{financialReport?.fee?.toFixed(2)}</span>
-          </div>
+          <StatCard title="Collected" value={peso(financialReport?.totalCollected)} tone="success" subtitle={`Fee: ${peso(financialReport?.fee)}`} />
         )}
       </div>
 
-      {/* Daily Breakdown Table */}
-      <div className="card" style={{ marginBottom: '1.5rem' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))', gap: '1.5rem', marginBottom: '1.5rem' }}>
+        <section className="card" aria-labelledby="chart-heading">
+          <div className="card-header">
+            <h3 id="chart-heading">Daily Attendance</h3>
+          </div>
+          {days.length ? <DayChart days={days} /> : <p className="text-muted">No event days.</p>}
+        </section>
+
+        <section className="card" aria-labelledby="class-heading">
+          <div className="card-header">
+            <h3 id="class-heading">Registrations by Classification</h3>
+          </div>
+          {byClassification.length === 0 ? (
+            <p className="text-muted">No registrations yet.</p>
+          ) : (
+            <div className="bar-chart" role="list">
+              {byClassification.map(c => (
+                <div key={c.key} role="listitem" aria-label={`${c.label}: ${c.count}`}>
+                  <div className="bar-row-label">
+                    <span>{c.label}</span>
+                    <span>{c.count} ({total ? Math.round((c.count / total) * 100) : 0}%)</span>
+                  </div>
+                  <div className="bar-track">
+                    <div className="bar-fill" style={{ width: `${(c.count / maxClass) * 100}%`, background: 'var(--color-brand-gold-500)' }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+
+      <section className="card mb-15" aria-labelledby="table-heading">
         <div className="card-header">
-          <h3>Daily Attendance Trends Breakdown</h3>
+          <h3 id="table-heading">Daily Breakdown</h3>
         </div>
         <div className="table-responsive">
           <table className="data-table">
             <thead>
               <tr>
-                <th>Day #</th>
-                <th>Event Date</th>
-                <th>Status</th>
-                <th>Scheduled Expected</th>
-                <th>Confirmed Check-Ins</th>
-                <th>Remaining</th>
-                <th>Daily Attendance %</th>
-                <th>Action</th>
+                <th scope="col">Day</th>
+                <th scope="col">Date</th>
+                <th scope="col">Status</th>
+                <th scope="col">Expected</th>
+                <th scope="col">Checked In</th>
+                <th scope="col">Remaining</th>
+                <th scope="col">Rate</th>
+                <th scope="col" className="no-print"><span className="sr-only">Export</span></th>
               </tr>
             </thead>
             <tbody>
-              {multiDayReport?.dayBreakdown?.map(d => (
+              {days.map(d => (
                 <tr key={d.id}>
                   <td style={{ fontWeight: 700 }}>Day {d.day_number}</td>
                   <td>{formatDate(d.date)}</td>
-                  <td>
-                    <StatusBadge status={d.status} />
-                  </td>
-                  <td>{d.expected} attendees</td>
-                  <td style={{ fontWeight: 700, color: 'var(--color-brand-navy-900)' }}>
-                    {d.confirmed}
-                  </td>
+                  <td><StatusBadge status={d.status} /></td>
+                  <td>{d.expected}</td>
+                  <td style={{ fontWeight: 700 }}>{d.confirmed}</td>
                   <td>{d.remaining}</td>
-                  <td>
-                    <span style={{ fontWeight: 700 }}>{d.attendance_percentage}%</span>
-                  </td>
-                  <td>
+                  <td style={{ fontWeight: 700 }}>{d.attendance_percentage}%</td>
+                  <td className="no-print">
                     <Button
                       variant="secondary"
                       size="sm"
                       onClick={() => reportService.exportAttendanceCsv(d.id)}
                       disabled={d.confirmed === 0}
+                      aria-label={`Export Day ${d.day_number} attendance CSV`}
                     >
                       <Download size={13} />
-                      <span>Export CSV</span>
+                      <span>CSV</span>
                     </Button>
                   </td>
                 </tr>
@@ -170,44 +201,28 @@ export function ReportsPage() {
             </tbody>
           </table>
         </div>
-      </div>
+      </section>
 
-      {/* Financial Breakdown (If Paid Event) */}
       {event.has_registration_fee && financialReport && (
-        <div className="card" style={{ marginBottom: '1.5rem' }}>
+        <section className="card" aria-labelledby="fin-heading">
           <div className="card-header">
-            <h3>Treasury & Collections Breakdown</h3>
+            <h3 id="fin-heading">Collections by Method</h3>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', padding: '0.5rem 0' }}>
-            <div style={{ background: 'var(--color-bg-base)', padding: '1rem', borderRadius: 'var(--radius-sm)' }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: 600 }}>CASH AT DESK</div>
-              <div style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--color-brand-navy-900)' }}>
-                ₱{financialReport.byMethod.cash?.toFixed(2) || '0.00'}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: '1rem' }}>
+            {[
+              ['Cash at desk', peso(financialReport.byMethod.cash)],
+              ['GCash', peso(financialReport.byMethod.gcash)],
+              ['Bank transfer', peso(financialReport.byMethod.bank_transfer)],
+              ['Other', peso(financialReport.byMethod.other)],
+              ['Fee waivers', `${financialReport.statusCounts.waived} registrants`]
+            ].map(([label, value]) => (
+              <div key={label} className="fieldset-box" style={{ marginBottom: 0 }}>
+                <div className="stat-title">{label}</div>
+                <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--color-brand-navy-900)' }}>{value}</div>
               </div>
-            </div>
-
-            <div style={{ background: 'var(--color-bg-base)', padding: '1rem', borderRadius: 'var(--radius-sm)' }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: 600 }}>GCASH</div>
-              <div style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--color-brand-navy-900)' }}>
-                ₱{financialReport.byMethod.gcash?.toFixed(2) || '0.00'}
-              </div>
-            </div>
-
-            <div style={{ background: 'var(--color-bg-base)', padding: '1rem', borderRadius: 'var(--radius-sm)' }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: 600 }}>BANK TRANSFER</div>
-              <div style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--color-brand-navy-900)' }}>
-                ₱{financialReport.byMethod.bank_transfer?.toFixed(2) || '0.00'}
-              </div>
-            </div>
-
-            <div style={{ background: 'var(--color-bg-base)', padding: '1rem', borderRadius: 'var(--radius-sm)' }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: 600 }}>PASTORAL WAIVERS</div>
-              <div style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--color-brand-gold-600)' }}>
-                {financialReport.statusCounts.waived} Registrants
-              </div>
-            </div>
+            ))}
           </div>
-        </div>
+        </section>
       )}
     </div>
   )

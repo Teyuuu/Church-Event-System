@@ -1,19 +1,43 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Modal } from '../../components/ui/Modal'
 import { Input } from '../../components/ui/Input'
 import { Button } from '../../components/ui/Button'
+import { Alert } from '../../components/ui/Alert'
+import { useToast } from '../../components/ui/Toast'
 import { attendeeService } from './attendeeService'
+import { isValidPhMobile, PH_MOBILE_HINT } from '../../utils/validation'
 import { Plus, Trash2 } from 'lucide-react'
 
+const MEMBER_CLASSES = [
+  { value: 'member', label: 'Member' },
+  { value: 'youth', label: 'Youth' },
+  { value: 'visitor', label: 'Visitor' },
+  { value: 'guest', label: 'Guest' }
+]
+
+const newMember = (lastName = '') => ({ firstName: '', lastName, classification: 'member' })
+
 export function FamilyRegistrationModal({ isOpen, onClose, eventId, onRegistered }) {
+  const toast = useToast()
   const [familyName, setFamilyName] = useState('')
   const [primaryContact, setPrimaryContact] = useState('')
-  const [members, setMembers] = useState([
-    { firstName: '', lastName: '', classification: 'member' },
-    { firstName: '', lastName: '', classification: 'member' }
-  ])
+  const [members, setMembers] = useState([newMember(), newMember()])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [phoneError, setPhoneError] = useState('')
+
+  useEffect(() => {
+    if (isOpen) {
+      setFamilyName('')
+      setPrimaryContact('')
+      setMembers([newMember(), newMember()])
+      setError('')
+      setPhoneError('')
+    }
+  }, [isOpen])
+
+  const surname = familyName.replace(/\s*family\s*/i, '').trim()
+  const isDirty = Boolean(familyName || primaryContact || members.some(m => m.firstName || m.lastName))
 
   const handleMemberChange = (index, field, value) => {
     setMembers(prev => {
@@ -23,12 +47,7 @@ export function FamilyRegistrationModal({ isOpen, onClose, eventId, onRegistered
     })
   }
 
-  const addMember = () => {
-    setMembers(prev => [
-      ...prev,
-      { firstName: '', lastName: familyName.replace(/\s*Family\s*/i, '').trim(), classification: 'member' }
-    ])
-  }
+  const addMember = () => setMembers(prev => [...prev, newMember(surname)])
 
   const removeMember = (index) => {
     if (members.length <= 1) return
@@ -41,16 +60,21 @@ export function FamilyRegistrationModal({ isOpen, onClose, eventId, onRegistered
       setError('Family / Household Name is required.')
       return
     }
+    if (!isValidPhMobile(primaryContact)) {
+      setPhoneError(PH_MOBILE_HINT)
+      return
+    }
 
-    const validMembers = members.filter(m => m.firstName.trim() && m.lastName.trim())
+    // Fill in empty last names with the family surname
+    const prepared = members.map(m => ({ ...m, lastName: m.lastName.trim() || surname }))
+    const validMembers = prepared.filter(m => m.firstName.trim() && m.lastName.trim())
     if (validMembers.length === 0) {
-      setError('Please add at least one member with first and last name.')
+      setError('Add at least one member with a first name.')
       return
     }
 
     setError('')
     setLoading(true)
-
     try {
       const result = await attendeeService.registerFamily({
         eventId,
@@ -59,7 +83,7 @@ export function FamilyRegistrationModal({ isOpen, onClose, eventId, onRegistered
         members: validMembers,
         source: 'staff_assisted'
       })
-
+      toast.success(`${familyName} registered — ${validMembers.length} QR passes issued`)
       onRegistered(result)
       onClose()
     } catch (err) {
@@ -70,110 +94,104 @@ export function FamilyRegistrationModal({ isOpen, onClose, eventId, onRegistered
   }
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Family / Group Registration" maxWidth="650px">
-      {error && (
-        <div style={{
-          padding: '0.75rem',
-          backgroundColor: 'var(--color-danger-bg)',
-          color: 'var(--color-danger)',
-          borderRadius: 'var(--radius-sm)',
-          fontSize: '0.85rem',
-          marginBottom: '1rem'
-        }}>
-          {error}
-        </div>
-      )}
+    <Modal isOpen={isOpen} onClose={onClose} title="Family / Group Registration" maxWidth="680px" isDirty={isDirty && !loading}>
+      {error && <Alert variant="error">{error}</Alert>}
 
       <form onSubmit={handleSubmit}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '1rem' }}>
+        <div className="form-row">
           <Input
             label="Family / Household Name"
             value={familyName}
             onChange={(e) => setFamilyName(e.target.value)}
             placeholder="e.g. Dela Cruz Family"
             required
+            autoFocus
           />
           <Input
             label="Primary Contact #"
+            type="tel"
+            inputMode="tel"
             value={primaryContact}
-            onChange={(e) => setPrimaryContact(e.target.value)}
+            onChange={(e) => { setPrimaryContact(e.target.value); setPhoneError('') }}
             placeholder="e.g. 0917-000-0000"
+            error={phoneError}
           />
         </div>
 
-        <div style={{ marginTop: '1rem', marginBottom: '0.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h4 style={{ fontSize: '0.95rem' }}>Family Members</h4>
+        <div style={{ marginBottom: '0.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+          <h3 style={{ fontSize: '1rem' }}>Family Members ({members.length})</h3>
           <Button variant="secondary" size="sm" onClick={addMember}>
             <Plus size={14} />
             <span>Add Member</span>
           </Button>
         </div>
+        {surname && (
+          <p className="form-text" style={{ marginTop: 0, marginBottom: '0.5rem' }}>
+            Leave a last name blank to use &ldquo;{surname}&rdquo;.
+          </p>
+        )}
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '350px', overflowY: 'auto', paddingRight: '0.25rem' }}>
+        <ol style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
           {members.map((m, idx) => (
-            <div key={idx} style={{
-              display: 'grid',
-              gridTemplateColumns: '1.2fr 1.2fr 1fr auto',
-              gap: '0.5rem',
-              alignItems: 'center',
-              background: 'var(--color-bg-muted)',
-              padding: '0.65rem',
-              borderRadius: 'var(--radius-sm)'
-            }}>
-              <input
-                type="text"
-                placeholder="First Name *"
-                className="form-control"
-                style={{ minHeight: '38px', fontSize: '0.875rem' }}
-                value={m.firstName}
-                onChange={(e) => handleMemberChange(idx, 'firstName', e.target.value)}
-                required
-              />
-              <input
-                type="text"
-                placeholder="Last Name *"
-                className="form-control"
-                style={{ minHeight: '38px', fontSize: '0.875rem' }}
-                value={m.lastName}
-                onChange={(e) => handleMemberChange(idx, 'lastName', e.target.value)}
-                required
-              />
-              <select
-                className="form-select"
-                style={{ minHeight: '38px', fontSize: '0.85rem' }}
-                value={m.classification}
-                onChange={(e) => handleMemberChange(idx, 'classification', e.target.value)}
-              >
-                <option value="member">Member</option>
-                <option value="youth">Youth</option>
-                <option value="visitor">Visitor</option>
-                <option value="guest">Guest</option>
-              </select>
-              {members.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => removeMember(idx)}
-                  style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: 'var(--color-danger)',
-                    cursor: 'pointer',
-                    padding: '0.35rem'
-                  }}
-                  title="Remove"
-                >
-                  <Trash2 size={16} />
-                </button>
-              )}
-            </div>
+            <li key={idx} className="fieldset-box" style={{ marginBottom: 0, padding: '0.75rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                <strong style={{ fontSize: '0.85rem' }}>Member {idx + 1}</strong>
+                {members.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => removeMember(idx)}
+                    className="btn btn-ghost btn-sm"
+                    style={{ color: 'var(--color-danger)' }}
+                    aria-label={`Remove member ${idx + 1}`}
+                  >
+                    <Trash2 size={16} />
+                    <span className="hide-sm">Remove</span>
+                  </button>
+                )}
+              </div>
+              <div className="form-row form-row-3">
+                <div className="form-group" style={{ marginBottom: '0.5rem' }}>
+                  <label className="form-label" htmlFor={`fm-first-${idx}`}>First name *</label>
+                  <input
+                    id={`fm-first-${idx}`}
+                    type="text"
+                    className="form-control"
+                    value={m.firstName}
+                    onChange={(e) => handleMemberChange(idx, 'firstName', e.target.value)}
+                  />
+                </div>
+                <div className="form-group" style={{ marginBottom: '0.5rem' }}>
+                  <label className="form-label" htmlFor={`fm-last-${idx}`}>Last name</label>
+                  <input
+                    id={`fm-last-${idx}`}
+                    type="text"
+                    className="form-control"
+                    placeholder={surname || ''}
+                    value={m.lastName}
+                    onChange={(e) => handleMemberChange(idx, 'lastName', e.target.value)}
+                  />
+                </div>
+                <div className="form-group" style={{ marginBottom: '0.5rem' }}>
+                  <label className="form-label" htmlFor={`fm-class-${idx}`}>Classification</label>
+                  <select
+                    id={`fm-class-${idx}`}
+                    className="form-select"
+                    value={m.classification}
+                    onChange={(e) => handleMemberChange(idx, 'classification', e.target.value)}
+                  >
+                    {MEMBER_CLASSES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                  </select>
+                </div>
+              </div>
+            </li>
           ))}
-        </div>
+        </ol>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
+        <div className="form-actions">
           <Button variant="secondary" onClick={onClose} disabled={loading}>
             Cancel
           </Button>
-          <Button type="submit" variant="primary" loading={loading}>
+          <Button type="submit" variant="primary" loading={loading} loadingText="Registering…">
             Register Family & Generate QR Codes
           </Button>
         </div>

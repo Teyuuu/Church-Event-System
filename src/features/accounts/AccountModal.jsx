@@ -1,9 +1,29 @@
-import React, { useState, useEffect } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { Modal } from '../../components/ui/Modal'
 import { Input } from '../../components/ui/Input'
+import { Select } from '../../components/ui/Select'
 import { Button } from '../../components/ui/Button'
+import { Alert } from '../../components/ui/Alert'
 import { accountService } from './accountService'
-import { ShieldCheck, UserCheck, Utensils, QrCode } from 'lucide-react'
+import { generateTempPassword } from '../../utils/validation'
+import { KeyRound, Copy } from 'lucide-react'
+
+const ROLE_OPTIONS = [
+  { value: 'admin', label: 'Administrator (full system & account control)' },
+  { value: 'registrar', label: 'Registrar (registration, payments & badges)' },
+  { value: 'usher', label: 'Usher (QR scanner & check-in)' },
+  { value: 'kitchen', label: 'Kitchen Staff (meal planning board)' }
+]
+
+function buildInitial(account) {
+  return {
+    fullName: account?.full_name || '',
+    email: account?.email || '',
+    password: '',
+    role: account?.role || 'usher',
+    isActive: account ? account.is_active !== false : true
+  }
+}
 
 export function AccountModal({
   isOpen,
@@ -13,87 +33,62 @@ export function AccountModal({
   onSaved
 }) {
   const isEditing = Boolean(account)
-
-  const [formData, setFormData] = useState({
-    fullName: '',
-    email: '',
-    password: '',
-    role: 'usher',
-    isActive: true
-  })
+  const initial = useMemo(() => buildInitial(account), [account, isOpen]) // eslint-disable-line react-hooks/exhaustive-deps
+  const [formData, setFormData] = useState(initial)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [generated, setGenerated] = useState('')
 
   useEffect(() => {
-    if (account) {
-      setFormData({
-        fullName: account.full_name || '',
-        email: account.email || '',
-        password: '',
-        role: account.role || 'usher',
-        isActive: account.is_active !== false
-      })
-    } else {
-      setFormData({
-        fullName: '',
-        email: '',
-        password: '',
-        role: 'usher',
-        isActive: true
-      })
-    }
+    setFormData(initial)
     setError('')
-  }, [account, isOpen])
+    setGenerated('')
+  }, [initial])
+
+  const isDirty = JSON.stringify(formData) !== JSON.stringify(initial)
+  const isSelf = isEditing && account?.id === currentUserId
 
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target
-    setFormData(prev => ({
-      ...prev,
-      [name]: type === 'checkbox' ? checked : value
-    }))
+    setFormData(prev => ({ ...prev, [name]: type === 'checkbox' ? checked : value }))
+  }
+
+  const handleGenerate = () => {
+    const pwd = generateTempPassword()
+    setFormData(prev => ({ ...prev, password: pwd }))
+    setGenerated(pwd)
+  }
+
+  const copyGenerated = async () => {
+    try { await navigator.clipboard.writeText(generated) } catch { /* user can copy manually */ }
   }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
 
-    if (!formData.fullName.trim()) {
-      setError('Staff full name is required.')
-      return
-    }
-    if (!formData.email.trim()) {
-      setError('Email address is required.')
-      return
-    }
+    if (!formData.fullName.trim()) return setError('Staff full name is required.')
+    if (!formData.email.trim()) return setError('Email address is required.')
     if (!isEditing && (!formData.password || formData.password.length < 6)) {
-      setError('Password must be at least 6 characters long.')
-      return
+      return setError('Password must be at least 6 characters long.')
     }
     if (isEditing && formData.password && formData.password.length < 6) {
-      setError('Password must be at least 6 characters long.')
-      return
+      return setError('Password must be at least 6 characters long.')
     }
 
     setLoading(true)
     try {
-      if (isEditing) {
-        await accountService.updateAccount(account.id, {
-          full_name: formData.fullName,
-          email: formData.email,
-          password: formData.password || undefined,
-          role: formData.role,
-          is_active: formData.isActive
-        })
-      } else {
-        await accountService.createAccount({
-          full_name: formData.fullName,
-          email: formData.email,
-          password: formData.password,
-          role: formData.role,
-          is_active: formData.isActive
-        })
+      const payload = {
+        full_name: formData.fullName,
+        email: formData.email,
+        role: formData.role,
+        is_active: formData.isActive
       }
-
+      if (isEditing) {
+        await accountService.updateAccount(account.id, { ...payload, password: formData.password || undefined })
+      } else {
+        await accountService.createAccount({ ...payload, password: formData.password })
+      }
       if (onSaved) onSaved()
       onClose()
     } catch (err) {
@@ -103,97 +98,76 @@ export function AccountModal({
     }
   }
 
-  const isSelf = isEditing && account?.id === currentUserId
-
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={isEditing ? `Edit Account: ${account.full_name}` : 'Add New Staff Account'}
-      maxWidth="550px"
+      title={isEditing ? `Edit Account: ${account.full_name}` : 'Add Staff Account'}
+      maxWidth="560px"
+      isDirty={isDirty && !loading}
     >
       <form onSubmit={handleSubmit}>
-        {error && (
-          <div style={{
-            padding: '0.75rem 1rem',
-            backgroundColor: 'var(--color-danger-bg)',
-            color: 'var(--color-danger)',
-            borderRadius: 'var(--radius-sm)',
-            fontSize: '0.85rem',
-            marginBottom: '1rem',
-            border: '1px solid #FECACA'
-          }}>
-            {error}
-          </div>
-        )}
+        {error && <Alert variant="error">{error}</Alert>}
 
         <Input
           label="Full Name & Title"
           name="fullName"
           value={formData.fullName}
           onChange={handleChange}
-          placeholder="e.g. Pastor David Villanueva, Sis. Grace Santos"
+          placeholder="e.g. Sis. Grace Santos"
+          autoComplete="off"
           required
+          autoFocus
         />
 
         <Input
           label="Staff Email Address"
           type="email"
           name="email"
+          inputMode="email"
+          autoComplete="off"
           value={formData.email}
           onChange={handleChange}
-          placeholder="e.g. david.villanueva@berean.org"
+          placeholder="e.g. grace.santos@berean.org"
           required
         />
 
-        <div className="form-group">
-          <label className="form-label">System Role & Permissions</label>
-          <select
-            name="role"
-            className="form-select"
-            value={formData.role}
-            onChange={handleChange}
-            disabled={isSelf}
-          >
-            <option value="admin">Administrator (Full System & Account Control)</option>
-            <option value="registrar">Registrar (Registration, Payments & Badges)</option>
-            <option value="usher">Usher (QR Scanner & Check-In Only)</option>
-            <option value="kitchen">Kitchen Staff (Meal Planning Board Only)</option>
-          </select>
-          {isSelf && (
-            <p className="form-text" style={{ color: 'var(--color-brand-gold-600)' }}>
-              Note: You cannot change your own administrator role.
-            </p>
-          )}
-        </div>
+        <Select
+          label="Role & Permissions"
+          name="role"
+          value={formData.role}
+          onChange={handleChange}
+          disabled={isSelf}
+          options={ROLE_OPTIONS}
+          helperText={isSelf ? 'You cannot change your own administrator role.' : undefined}
+        />
 
         <Input
           label={isEditing ? 'New Password (Optional)' : 'Initial Password'}
           type="password"
           name="password"
+          autoComplete="new-password"
           value={formData.password}
           onChange={handleChange}
-          placeholder={isEditing ? 'Leave blank to keep existing password' : 'At least 6 characters'}
+          placeholder={isEditing ? 'Leave blank to keep current password' : 'At least 6 characters'}
           required={!isEditing}
+          helperText="Share the password privately with the staff member."
         />
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center', marginTop: '-0.75rem', marginBottom: '1rem' }}>
+          <Button variant="secondary" size="sm" onClick={handleGenerate}>
+            <KeyRound size={14} />
+            <span>Generate temporary password</span>
+          </Button>
+          {generated && (
+            <Button variant="ghost" size="sm" onClick={copyGenerated} aria-label="Copy generated password">
+              <Copy size={14} />
+              <span style={{ fontFamily: 'ui-monospace, monospace' }}>{generated}</span>
+            </Button>
+          )}
+        </div>
 
-        {/* Active Toggle */}
-        <div style={{
-          marginTop: '1rem',
-          marginBottom: '1.5rem',
-          padding: '0.75rem 1rem',
-          backgroundColor: 'var(--color-bg-muted)',
-          borderRadius: 'var(--radius-sm)',
-          border: '1px solid var(--color-border)'
-        }}>
-          <label style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.6rem',
-            cursor: isSelf ? 'not-allowed' : 'pointer',
-            fontSize: '0.9rem',
-            fontWeight: 600
-          }}>
+        <div className="fieldset-box">
+          <label className="checkbox-label" style={{ fontWeight: 600, cursor: isSelf ? 'not-allowed' : 'pointer' }}>
             <input
               type="checkbox"
               name="isActive"
@@ -201,16 +175,14 @@ export function AccountModal({
               onChange={handleChange}
               disabled={isSelf}
             />
-            <span>Active Account (Permit sign in to system)</span>
+            <span>Active account (can sign in)</span>
           </label>
           {isSelf && (
-            <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: '0.25rem' }}>
-              You cannot deactivate your own active session.
-            </p>
+            <p className="form-text">You cannot deactivate your own account.</p>
           )}
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+        <div className="form-actions">
           <Button variant="secondary" onClick={onClose} disabled={loading}>
             Cancel
           </Button>
@@ -222,4 +194,3 @@ export function AccountModal({
     </Modal>
   )
 }
-

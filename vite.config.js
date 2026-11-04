@@ -14,7 +14,6 @@ export default defineConfig({
         manualChunks: {
           'vendor-react': ['react', 'react-dom', 'react-router-dom'],
           'vendor-qr': ['qrcode'],
-          'vendor-pdf': ['jspdf'],
           'vendor-scanner': ['html5-qrcode'],
           'vendor-supabase': ['@supabase/supabase-js']
         }

@@ -8,25 +8,33 @@ export function QRCard({
   classification = 'Attendee',
   qrPayload,
   registrationId,
-  showBorder = true
+  showBorder = true,
+  onReady
 }) {
   const [dataUrl, setDataUrl] = useState('')
 
   useEffect(() => {
     let isMounted = true
     async function renderQr() {
-      if (qrPayload) {
-        const url = await qrService.generateQrDataUrl(qrPayload)
-        if (isMounted) setDataUrl(url)
-      } else if (registrationId) {
-        const payload = await qrService.getCredential(registrationId)
-        const url = await qrService.generateQrDataUrl(payload)
-        if (isMounted) setDataUrl(url)
+      try {
+        let url = ''
+        if (qrPayload) {
+          url = await qrService.generateQrDataUrl(qrPayload)
+        } else if (registrationId) {
+          const payload = await qrService.getCredential(registrationId)
+          url = await qrService.generateQrDataUrl(payload)
+        }
+        if (isMounted) {
+          setDataUrl(url)
+          onReady?.(registrationId, true)
+        }
+      } catch {
+        if (isMounted) onReady?.(registrationId, false)
       }
     }
     renderQr()
     return () => { isMounted = false }
-  }, [qrPayload, registrationId])
+  }, [qrPayload, registrationId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div

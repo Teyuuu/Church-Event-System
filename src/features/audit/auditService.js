@@ -1,6 +1,7 @@
 import { supabase, isSupabaseConfigured } from '../../lib/supabaseClient'
 import { getStore, saveStore } from '../../lib/mockStore'
-import { downloadCsv } from '../../utils/csv'
+import { convertToCsv, downloadCsv } from '../../utils/csv'
+import { formatDateTime, todayLocal } from '../../utils/date'
 
 export const auditService = {
   /**
@@ -98,7 +99,7 @@ export const auditService = {
           profiles (full_name, role)
         `)
         .order('created_at', { ascending: false })
-        .limit(300)
+        .limit(filters.limit || 1000)
 
       if (error) throw error
 
@@ -166,14 +167,23 @@ export const auditService = {
    */
   exportAuditLogsCsv(logs) {
     const rows = logs.map(l => ({
-      Timestamp: new Date(l.created_at).toLocaleString(),
-      'Actor Name': l.actor_name,
-      'Actor Role': l.actor_role,
-      Action: l.action,
-      'Entity Type': l.entity_type,
-      'Details / Summary': l.details
+      timestamp: formatDateTime(l.created_at),
+      actorName: l.actor_name,
+      actorRole: l.actor_role,
+      action: l.action,
+      entityType: l.entity_type,
+      details: l.details
     }))
 
-    downloadCsv(rows, `Berean_Church_Audit_Logs_${new Date().toISOString().split('T')[0]}`)
+    const columns = [
+      { key: 'timestamp', label: 'Timestamp' },
+      { key: 'actorName', label: 'Actor Name' },
+      { key: 'actorRole', label: 'Actor Role' },
+      { key: 'action', label: 'Action' },
+      { key: 'entityType', label: 'Entity Type' },
+      { key: 'details', label: 'Details / Summary' }
+    ]
+
+    downloadCsv(`Berean_Church_Audit_Logs_${todayLocal()}`, convertToCsv(rows, columns))
   }
 }

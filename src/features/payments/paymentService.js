@@ -102,13 +102,22 @@ export const paymentService = {
   /**
    * Waive registration fee
    */
-  async waivePayment(registrationId, reason = 'Pastoral waiver') {
+  async waivePayment(registrationId, reason = 'Pastoral waiver', attendeeName = '') {
+    const logWaiver = () => auditService.logActivity({
+      action: 'PAYMENT_WAIVED',
+      entityType: 'registration',
+      entityId: registrationId,
+      details: `Fee waived${attendeeName ? ` for ${attendeeName}` : ''} — Reason: ${reason}`,
+      metadata: { reason, attendeeName }
+    })
+
     if (isSupabaseConfigured && supabase) {
       const { error } = await supabase
         .from('event_registrations')
         .update({ payment_status: 'waived' })
         .eq('id', registrationId)
       if (error) throw error
+      await logWaiver()
       return true
     }
 
@@ -116,8 +125,40 @@ export const paymentService = {
     const reg = store.event_registrations.find(r => r.id === registrationId)
     if (reg) {
       reg.payment_status = 'waived'
+      reg.waiver_reason = reason
       saveStore(store)
     }
+    await logWaiver()
     return true
+  },
+
+  /**
+   * Get completed-payment totals keyed by registration id (for balance columns)
+   * @param {string[]} registrationIds
+   * @returns {Promise<Record<string, number>>}
+   */
+  async getPaidTotalsByRegistration(registrationIds = []) {
+    if (registrationIds.length === 0) return {}
+    let payments = []
+
+    if (isSupabaseConfigured && supabase) {
+      const { data, error } = await supabase
+        .from('payments')
+        .select('registration_id, amount, payment_status')
+        .in('registration_id', registrationIds)
+      if (error) throw error
+      payments = data || []
+    } else {
+      const store = getStore()
+      const idSet = new Set(registrationIds)
+      payments = store.payments.filter(p => idSet.has(p.registration_id))
+    }
+
+    return payments
+      .filter(p => p.payment_status === 'completed')
+      .reduce((acc, p) => {
+        acc[p.registration_id] = (acc[p.registration_id] || 0) + parseFloat(p.amount || 0)
+        return acc
+      }, {})
   }
 }

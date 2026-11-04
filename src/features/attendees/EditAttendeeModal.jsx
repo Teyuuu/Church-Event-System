@@ -1,9 +1,30 @@
-import React, { useState, useEffect } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { Modal } from '../../components/ui/Modal'
 import { Input } from '../../components/ui/Input'
+import { Select } from '../../components/ui/Select'
 import { Button } from '../../components/ui/Button'
+import { Alert } from '../../components/ui/Alert'
+import { useToast } from '../../components/ui/Toast'
 import { attendeeService } from './attendeeService'
-import { CheckCircle2 } from 'lucide-react'
+import { CLASSIFICATION_OPTIONS, SOURCE_OPTIONS } from './classifications'
+import { isValidPhMobile, PH_MOBILE_HINT } from '../../utils/validation'
+
+function buildInitial(registration, eventDays) {
+  const attendee = registration?.attendee || {}
+  return {
+    firstName: attendee.first_name || '',
+    middleName: attendee.middle_name || '',
+    lastName: attendee.last_name || '',
+    contactNumber: attendee.contact_number || '',
+    email: attendee.email || '',
+    classification: attendee.classification || 'visitor',
+    source: registration?.registration_source || 'staff_assisted',
+    familyName: attendee.households?.family_name || '',
+    selectedDays: registration?.selected_day_ids?.length > 0
+      ? registration.selected_day_ids
+      : eventDays.map(d => d.id)
+  }
+}
 
 export function EditAttendeeModal({
   isOpen,
@@ -12,49 +33,28 @@ export function EditAttendeeModal({
   eventDays = [],
   onSaved
 }) {
+  const toast = useToast()
   const attendee = registration?.attendee
-
-  const [formData, setFormData] = useState({
-    firstName: '',
-    middleName: '',
-    lastName: '',
-    contactNumber: '',
-    email: '',
-    classification: 'visitor',
-    source: 'staff_assisted',
-    familyName: '',
-    selectedDays: []
-  })
+  const initial = useMemo(() => buildInitial(registration, eventDays), [registration, eventDays])
+  const [formData, setFormData] = useState(initial)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [phoneError, setPhoneError] = useState('')
 
   useEffect(() => {
-    if (registration && attendee) {
-      const initialDays =
-        registration.selected_day_ids?.length > 0
-          ? registration.selected_day_ids
-          : eventDays.map(d => d.id)
-
-      setFormData({
-        firstName: attendee.first_name || '',
-        middleName: attendee.middle_name || '',
-        lastName: attendee.last_name || '',
-        contactNumber: attendee.contact_number || '',
-        email: attendee.email || '',
-        classification: attendee.classification || 'visitor',
-        source: registration.registration_source || 'staff_assisted',
-        familyName: attendee.households?.family_name || '',
-        selectedDays: initialDays
-      })
-      setError('')
-    }
-  }, [registration, attendee, eventDays])
+    setFormData(initial)
+    setError('')
+    setPhoneError('')
+  }, [initial])
 
   if (!registration || !attendee) return null
+
+  const isDirty = JSON.stringify(formData) !== JSON.stringify(initial)
 
   const handleChange = (e) => {
     const { name, value } = e.target
     setFormData(prev => ({ ...prev, [name]: value }))
+    if (name === 'contactNumber') setPhoneError('')
   }
 
   const handleDayToggle = (dayId) => {
@@ -77,6 +77,14 @@ export function EditAttendeeModal({
       setError('First name and last name are required.')
       return
     }
+    if (!isValidPhMobile(formData.contactNumber)) {
+      setPhoneError(PH_MOBILE_HINT)
+      return
+    }
+    if (eventDays.length > 1 && formData.selectedDays.length === 0) {
+      setError('Select at least one attending day.')
+      return
+    }
 
     setLoading(true)
     try {
@@ -93,7 +101,7 @@ export function EditAttendeeModal({
         familyName: formData.familyName,
         selectedDayIds: formData.selectedDays
       })
-
+      toast.success(`Updated ${formData.firstName} ${formData.lastName}`)
       if (onSaved) onSaved()
       onClose()
     } catch (err) {
@@ -109,70 +117,37 @@ export function EditAttendeeModal({
       onClose={onClose}
       title="Edit Registered Attendee"
       maxWidth="650px"
+      isDirty={isDirty && !loading}
     >
       <form onSubmit={handleSubmit}>
-        {error && (
-          <div style={{
-            padding: '0.75rem',
-            backgroundColor: 'var(--color-danger-bg)',
-            color: 'var(--color-danger)',
-            borderRadius: 'var(--radius-sm)',
-            fontSize: '0.85rem',
-            marginBottom: '1rem'
-          }}>
-            {error}
-          </div>
-        )}
+        {error && <Alert variant="error">{error}</Alert>}
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-          <Input
-            label="First Name"
-            name="firstName"
-            value={formData.firstName}
+        <div className="form-row">
+          <Input label="First Name" name="firstName" value={formData.firstName} onChange={handleChange} required />
+          <Input label="Last Name" name="lastName" value={formData.lastName} onChange={handleChange} required />
+        </div>
+
+        <div className="form-row">
+          <Input label="Middle Name (Optional)" name="middleName" value={formData.middleName} onChange={handleChange} />
+          <Select
+            label="Classification"
+            name="classification"
+            value={formData.classification}
             onChange={handleChange}
-            required
-          />
-          <Input
-            label="Last Name"
-            name="lastName"
-            value={formData.lastName}
-            onChange={handleChange}
-            required
+            options={CLASSIFICATION_OPTIONS}
           />
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-          <Input
-            label="Middle Name (Optional)"
-            name="middleName"
-            value={formData.middleName}
-            onChange={handleChange}
-          />
-          <div className="form-group">
-            <label className="form-label">Classification</label>
-            <select
-              name="classification"
-              className="form-select"
-              value={formData.classification}
-              onChange={handleChange}
-            >
-              <option value="member">Church Member</option>
-              <option value="visitor">First-time Visitor</option>
-              <option value="youth">Youth</option>
-              <option value="pastor">Pastor / Minister</option>
-              <option value="worker">Church Worker</option>
-              <option value="guest">Invited Guest</option>
-            </select>
-          </div>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+        <div className="form-row">
           <Input
             label="Mobile / Contact #"
             name="contactNumber"
+            type="tel"
+            inputMode="tel"
             value={formData.contactNumber}
             onChange={handleChange}
             placeholder="e.g. 0917-123-4567"
+            error={phoneError}
           />
           <Input
             label="Email Address"
@@ -184,7 +159,7 @@ export function EditAttendeeModal({
           />
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+        <div className="form-row">
           <Input
             label="Family / Household Name (Optional)"
             name="familyName"
@@ -192,30 +167,21 @@ export function EditAttendeeModal({
             onChange={handleChange}
             placeholder="e.g. Santos Family"
           />
-          <div className="form-group">
-            <label className="form-label">Registration Source</label>
-            <select
-              name="source"
-              className="form-select"
-              value={formData.source}
-              onChange={handleChange}
-            >
-              <option value="paper">Paper Registration Sheet (Physical form)</option>
-              <option value="staff_assisted">Staff-Assisted Digital Entry</option>
-              <option value="online">Online Direct Submission</option>
-            </select>
-          </div>
+          <Select
+            label="Registration Source"
+            name="source"
+            value={formData.source}
+            onChange={handleChange}
+            options={SOURCE_OPTIONS}
+          />
         </div>
 
-        {/* Multi-day selection */}
         {eventDays.length > 1 && (
-          <div className="form-group" style={{ background: 'var(--color-bg-muted)', padding: '0.75rem', borderRadius: 'var(--radius-sm)' }}>
-            <label className="form-label" style={{ marginBottom: '0.5rem' }}>
-              Attending Days:
-            </label>
-            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+          <fieldset className="fieldset-box">
+            <legend className="form-label" style={{ float: 'left', width: '100%' }}>Attending Days</legend>
+            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', clear: 'both' }}>
               {eventDays.map(d => (
-                <label key={d.id} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.875rem', cursor: 'pointer' }}>
+                <label key={d.id} className="checkbox-label">
                   <input
                     type="checkbox"
                     checked={formData.selectedDays.includes(d.id)}
@@ -225,31 +191,18 @@ export function EditAttendeeModal({
                 </label>
               ))}
             </div>
-          </div>
+          </fieldset>
         )}
 
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.5rem',
-          padding: '0.65rem 0.85rem',
-          backgroundColor: 'var(--color-bg-muted)',
-          color: 'var(--color-text-muted)',
-          borderRadius: 'var(--radius-sm)',
-          fontSize: '0.8rem',
-          marginBottom: '1.25rem'
-        }}>
-          <CheckCircle2 size={16} color="var(--color-success)" style={{ flexShrink: 0 }} />
-          <span>
-            The attendee&apos;s existing QR code remains valid after editing. Re-download the PDF Pass or re-print the badge if you need the updated spelling on their physical card.
-          </span>
-        </div>
+        <Alert variant="info">
+          The attendee&apos;s existing QR code stays valid after editing. Re-download the PDF pass or re-print the badge if the printed name needs updating.
+        </Alert>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+        <div className="form-actions">
           <Button variant="secondary" onClick={onClose} disabled={loading}>
             Cancel
           </Button>
-          <Button type="submit" variant="primary" loading={loading}>
+          <Button type="submit" variant="primary" loading={loading} disabled={!isDirty}>
             Save Changes
           </Button>
         </div>
@@ -257,4 +210,3 @@ export function EditAttendeeModal({
     </Modal>
   )
 }
-

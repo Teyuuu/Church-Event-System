@@ -1,6 +1,6 @@
 import { getStore } from '../../lib/mockStore'
 import { convertToCsv, downloadCsv } from '../../utils/csv'
-import { formatDate, formatDateTime } from '../../utils/date'
+import { formatDate, formatDateTime, todayLocal } from '../../utils/date'
 
 export const reportService = {
   /**
@@ -156,7 +156,7 @@ export const reportService = {
     ]
 
     const csv = convertToCsv(rows, columns)
-    const filename = `${event?.name || 'Berean_Event'}_Registrations_${new Date().toISOString().split('T')[0]}`
+    const filename = `${event?.name || 'Berean_Event'}_Registrations_${todayLocal()}`
     downloadCsv(filename, csv)
   },
 

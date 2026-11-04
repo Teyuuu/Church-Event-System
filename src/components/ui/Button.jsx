@@ -1,64 +1,71 @@
 import React from 'react'
 
+const VARIANT_CLASS = {
+  primary: 'btn-primary',
+  secondary: 'btn-secondary',
+  gold: 'btn-gold',
+  danger: 'btn-danger',
+  ghost: 'btn-ghost'
+}
+
+const SIZE_CLASS = {
+  sm: 'btn-sm',
+  md: '',
+  lg: 'btn-lg'
+}
+
 /**
  * Reusable Button Component
  * @param {{
- *   variant?: 'primary' | 'secondary' | 'gold' | 'danger',
+ *   variant?: 'primary' | 'secondary' | 'gold' | 'danger' | 'ghost',
  *   size?: 'sm' | 'md' | 'lg',
  *   children: React.ReactNode,
  *   className?: string,
  *   disabled?: boolean,
  *   loading?: boolean,
+ *   loadingText?: string,
+ *   block?: boolean,
  *   type?: 'button' | 'submit' | 'reset',
  *   onClick?: (e: React.MouseEvent) => void,
  * }} props
  */
-export function Button({
+export const Button = React.forwardRef(function Button({
   variant = 'primary',
   size = 'md',
   children,
   className = '',
   disabled = false,
   loading = false,
+  loadingText = 'Saving…',
+  block = false,
   type = 'button',
   onClick,
   ...rest
-}) {
-  const variantClass = {
-    primary: 'btn-primary',
-    secondary: 'btn-secondary',
-    gold: 'btn-gold',
-    danger: 'btn-danger',
-  }[variant] || 'btn-primary'
-
-  const sizeClass = {
-    sm: 'btn-sm',
-    md: '',
-    lg: 'btn-lg',
-  }[size] || ''
+}, ref) {
+  const classes = [
+    'btn',
+    VARIANT_CLASS[variant] || 'btn-primary',
+    SIZE_CLASS[size] || '',
+    block ? 'btn-block' : '',
+    className
+  ].filter(Boolean).join(' ')
 
   return (
     <button
+      ref={ref}
       type={type}
-      className={`btn ${variantClass} ${sizeClass} ${className}`}
+      className={classes}
       disabled={disabled || loading}
+      aria-busy={loading || undefined}
       onClick={onClick}
       {...rest}
     >
       {loading ? (
         <>
-          <span className="spinner-border" style={{
-            width: '1rem',
-            height: '1rem',
-            border: '2px solid currentColor',
-            borderRightColor: 'transparent',
-            borderRadius: '50%',
-            display: 'inline-block',
-            animation: 'spin 0.75s linear infinite'
-          }} />
-          <span>Processing...</span>
+          <span className="spinner" aria-hidden="true" />
+          <span>{loadingText}</span>
         </>
       ) : children}
     </button>
   )
-}
+})

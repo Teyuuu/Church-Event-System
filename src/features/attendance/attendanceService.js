@@ -242,6 +242,7 @@ export const attendanceService = {
       if (error) throw error
       return (data || []).map(r => ({
         id: r.id,
+        registration_id: r.event_registrations?.id,
         checked_in_at: r.checked_in_at,
         check_in_method: r.check_in_method,
         attendee_name: `${r.event_registrations?.attendees?.first_name} ${r.event_registrations?.attendees?.last_name}`,
@@ -258,6 +259,7 @@ export const attendanceService = {
       const attendee = store.attendees.find(att => att.id === reg?.attendee_id)
       return {
         id: r.id,
+        registration_id: r.registration_id,
         checked_in_at: r.checked_in_at,
         check_in_method: r.check_in_method,
         attendee_name: attendee ? `${attendee.first_name} ${attendee.last_name}` : 'Unknown',

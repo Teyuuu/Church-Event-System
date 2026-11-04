@@ -1,5 +1,6 @@
 import { supabase, isSupabaseConfigured } from '../../lib/supabaseClient'
 import { getStore } from '../../lib/mockStore'
+import { todayLocal } from '../../utils/date'
 
 export const dashboardService = {
   /**
@@ -13,7 +14,7 @@ export const dashboardService = {
     let confirmedToday = 0
     let totalRevenue = 0
 
-    const todayDateStr = new Date().toISOString().split('T')[0]
+    const todayDateStr = todayLocal()
     const todayDays = store.event_days.filter(d => d.event_date === todayDateStr)
     const todayDayIds = todayDays.map(d => d.id)
 
@@ -49,8 +50,11 @@ export const dashboardService = {
           const reg = store.event_registrations.find(r => r.id === a.registration_id)
           const att = store.attendees.find(at => at.id === reg?.attendee_id)
           const day = store.event_days.find(d => d.id === a.event_day_id)
+          const evt = store.events.find(e => e.id === day?.event_id)
           return {
             id: a.id,
+            event_id: evt?.id || null,
+            event_name: evt?.name || '',
             name: att ? `${att.first_name} ${att.last_name}` : 'Unknown',
             checked_in_at: a.checked_in_at,
             day_number: day?.day_number || 1

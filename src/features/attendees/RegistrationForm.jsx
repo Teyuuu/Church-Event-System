@@ -1,8 +1,22 @@
-import React, { useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Input } from '../../components/ui/Input'
+import { Select } from '../../components/ui/Select'
 import { Button } from '../../components/ui/Button'
+import { Alert } from '../../components/ui/Alert'
+import { useToast } from '../../components/ui/Toast'
 import { attendeeService } from './attendeeService'
-import { AlertCircle } from 'lucide-react'
+import { CLASSIFICATION_OPTIONS, SOURCE_OPTIONS } from './classifications'
+import { isValidPhMobile, PH_MOBILE_HINT } from '../../utils/validation'
+import { CheckCircle2 } from 'lucide-react'
+
+const EMPTY_PERSON = {
+  firstName: '',
+  middleName: '',
+  lastName: '',
+  contactNumber: '',
+  email: '',
+  classification: 'visitor'
+}
 
 export function RegistrationForm({
   eventId,
@@ -10,43 +24,44 @@ export function RegistrationForm({
   defaultSource = 'staff_assisted',
   onSuccess,
   onCancel,
+  onDirtyChange,
   existingAttendees = []
 }) {
+  const toast = useToast()
+  const firstNameRef = useRef(null)
   const [formData, setFormData] = useState({
-    firstName: '',
-    middleName: '',
-    lastName: '',
-    contactNumber: '',
-    email: '',
-    classification: 'visitor',
+    ...EMPTY_PERSON,
     source: defaultSource,
     selectedDays: eventDays.map(d => d.id)
   })
   const [keepOpen, setKeepOpen] = useState(defaultSource === 'paper')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [duplicateWarning, setDuplicateWarning] = useState(null)
+  const [phoneError, setPhoneError] = useState('')
+  const [recent, setRecent] = useState([])
+
+  const isDirty = Boolean(
+    formData.firstName || formData.lastName || formData.middleName || formData.contactNumber || formData.email
+  )
+
+  useEffect(() => {
+    onDirtyChange?.(isDirty)
+  }, [isDirty, onDirtyChange])
+
+  // Duplicate check (name match against already registered attendees)
+  const duplicate = (() => {
+    const fn = formData.firstName.trim().toLowerCase()
+    const ln = formData.lastName.trim().toLowerCase()
+    if (!fn || !ln) return null
+    return existingAttendees.find(
+      a => a.first_name?.toLowerCase() === fn && a.last_name?.toLowerCase() === ln
+    ) || null
+  })()
 
   const handleChange = (e) => {
     const { name, value } = e.target
     setFormData(prev => ({ ...prev, [name]: value }))
-
-    // Duplicate check on name blur
-    if (name === 'lastName' || name === 'firstName') {
-      const fn = name === 'firstName' ? value : formData.firstName
-      const ln = name === 'lastName' ? value : formData.lastName
-      if (fn.trim() && ln.trim()) {
-        const match = existingAttendees.find(
-          a => a.first_name.toLowerCase() === fn.trim().toLowerCase() &&
-               a.last_name.toLowerCase() === ln.trim().toLowerCase()
-        )
-        if (match) {
-          setDuplicateWarning(`Note: An attendee named "${match.first_name} ${match.last_name}" is already registered.`)
-        } else {
-          setDuplicateWarning(null)
-        }
-      }
-    }
+    if (name === 'contactNumber') setPhoneError('')
   }
 
   const handleDayToggle = (dayId) => {
@@ -64,8 +79,17 @@ export function RegistrationForm({
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
-    setLoading(true)
 
+    if (!isValidPhMobile(formData.contactNumber)) {
+      setPhoneError(PH_MOBILE_HINT)
+      return
+    }
+    if (eventDays.length > 1 && formData.selectedDays.length === 0) {
+      setError('Select at least one attending day.')
+      return
+    }
+
+    setLoading(true)
     try {
       const result = await attendeeService.registerAttendee({
         eventId,
@@ -79,20 +103,15 @@ export function RegistrationForm({
         selectedDayIds: formData.selectedDays
       })
 
-      if (onSuccess) onSuccess(result)
+      const fullName = `${formData.firstName.trim()} ${formData.lastName.trim()}`
+      toast.success(`Saved: ${fullName} — QR pass issued`)
+      if (onSuccess) onSuccess(result, { keepOpen })
 
       if (keepOpen) {
-        // Reset form for next paper entry while keeping day selections
-        setFormData(prev => ({
-          ...prev,
-          firstName: '',
-          middleName: '',
-          lastName: '',
-          contactNumber: '',
-          email: '',
-          classification: 'visitor'
-        }))
-        setDuplicateWarning(null)
+        setRecent(prev => [{ id: result?.registrationId || Date.now(), name: fullName }, ...prev].slice(0, 5))
+        // Reset person fields for the next paper entry; keep days + source
+        setFormData(prev => ({ ...prev, ...EMPTY_PERSON }))
+        setTimeout(() => firstNameRef.current?.focus(), 0)
       }
     } catch (err) {
       setError(err.message || 'Failed to complete registration')
@@ -102,121 +121,93 @@ export function RegistrationForm({
   }
 
   return (
-    <form onSubmit={handleSubmit}>
-      {error && (
-        <div style={{
-          padding: '0.75rem',
-          backgroundColor: 'var(--color-danger-bg)',
-          color: 'var(--color-danger)',
-          borderRadius: 'var(--radius-sm)',
-          fontSize: '0.85rem',
-          marginBottom: '1rem'
-        }}>
-          {error}
-        </div>
+    <form onSubmit={handleSubmit} noValidate={false}>
+      {error && <Alert variant="error">{error}</Alert>}
+
+      {duplicate && (
+        <Alert variant="warning" title="Possible duplicate">
+          &ldquo;{duplicate.first_name} {duplicate.last_name}&rdquo;
+          {duplicate.contact_number ? ` (${duplicate.contact_number})` : ''} is already registered for this event.
+          Check before saving again.
+        </Alert>
       )}
 
-      {duplicateWarning && (
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.5rem',
-          padding: '0.75rem',
-          backgroundColor: 'var(--color-warning-bg)',
-          color: 'var(--color-warning)',
-          borderRadius: 'var(--radius-sm)',
-          fontSize: '0.85rem',
-          marginBottom: '1rem',
-          border: '1px solid #FDE68A'
-        }}>
-          <AlertCircle size={18} />
-          <span>{duplicateWarning}</span>
-        </div>
-      )}
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+      <div className="form-row">
         <Input
           label="First Name"
           name="firstName"
           value={formData.firstName}
           onChange={handleChange}
+          autoComplete="off"
+          ref={firstNameRef}
           required
+          autoFocus
         />
         <Input
           label="Last Name"
           name="lastName"
           value={formData.lastName}
           onChange={handleChange}
+          autoComplete="off"
           required
         />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+      <div className="form-row">
         <Input
           label="Middle Name (Optional)"
           name="middleName"
           value={formData.middleName}
           onChange={handleChange}
+          autoComplete="off"
         />
-        <div className="form-group">
-          <label className="form-label">Classification</label>
-          <select
-            name="classification"
-            className="form-select"
-            value={formData.classification}
-            onChange={handleChange}
-          >
-            <option value="member">Church Member</option>
-            <option value="visitor">First-time Visitor</option>
-            <option value="youth">Youth</option>
-            <option value="pastor">Pastor / Minister</option>
-            <option value="worker">Church Worker</option>
-            <option value="guest">Invited Guest</option>
-          </select>
-        </div>
+        <Select
+          label="Classification"
+          name="classification"
+          value={formData.classification}
+          onChange={handleChange}
+          options={CLASSIFICATION_OPTIONS}
+        />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+      <div className="form-row">
         <Input
           label="Mobile / Contact #"
           name="contactNumber"
+          type="tel"
+          inputMode="tel"
+          autoComplete="off"
           value={formData.contactNumber}
           onChange={handleChange}
           placeholder="e.g. 0917-123-4567"
+          error={phoneError}
         />
         <Input
           label="Email Address"
           type="email"
           name="email"
+          inputMode="email"
+          autoComplete="off"
           value={formData.email}
           onChange={handleChange}
           placeholder="e.g. attendee@email.com"
         />
       </div>
 
-      <div className="form-group">
-        <label className="form-label">Registration Source</label>
-        <select
-          name="source"
-          className="form-select"
-          value={formData.source}
-          onChange={handleChange}
-        >
-          <option value="paper">Paper Registration Sheet (Physical form)</option>
-          <option value="staff_assisted">Staff-Assisted Digital Entry</option>
-          <option value="online">Online Direct Submission</option>
-        </select>
-      </div>
+      <Select
+        label="Registration Source"
+        name="source"
+        value={formData.source}
+        onChange={handleChange}
+        options={SOURCE_OPTIONS}
+      />
 
-      {/* Multi-day selection */}
       {eventDays.length > 1 && (
-        <div className="form-group" style={{ background: 'var(--color-bg-muted)', padding: '0.75rem', borderRadius: 'var(--radius-sm)' }}>
-          <label className="form-label" style={{ marginBottom: '0.5rem' }}>
-            Attending Days:
-          </label>
-          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+        <fieldset className="fieldset-box">
+          <legend className="form-label" style={{ float: 'left', width: '100%' }}>Attending Days</legend>
+          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', clear: 'both' }}>
             {eventDays.map(d => (
-              <label key={d.id} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.875rem', cursor: 'pointer' }}>
+              <label key={d.id} className="checkbox-label">
                 <input
                   type="checkbox"
                   checked={formData.selectedDays.includes(d.id)}
@@ -226,28 +217,38 @@ export function RegistrationForm({
               </label>
             ))}
           </div>
+        </fieldset>
+      )}
+
+      <label className="checkbox-label" style={{ marginBottom: '0.5rem' }}>
+        <input
+          type="checkbox"
+          checked={keepOpen}
+          onChange={(e) => setKeepOpen(e.target.checked)}
+        />
+        <span><strong>Rapid entry:</strong> keep this form open after saving</span>
+      </label>
+
+      {recent.length > 0 && (
+        <div className="fieldset-box" style={{ marginTop: '0.75rem' }} aria-live="polite">
+          <div className="form-label" style={{ marginBottom: '0.35rem' }}>Saved this session</div>
+          <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            {recent.map(r => (
+              <li key={r.id} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.875rem', color: 'var(--color-success)', fontWeight: 600 }}>
+                <CheckCircle2 size={15} aria-hidden="true" /> {r.name}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
-      {/* Keep open for rapid paper entry */}
-      <div style={{ marginBottom: '1.25rem' }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', cursor: 'pointer', color: 'var(--color-brand-navy-900)' }}>
-          <input
-            type="checkbox"
-            checked={keepOpen}
-            onChange={(e) => setKeepOpen(e.target.checked)}
-          />
-          <strong>Keep form open for rapid successive paper entry</strong>
-        </label>
-      </div>
-
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+      <div className="form-actions">
         {onCancel && (
           <Button variant="secondary" onClick={onCancel} disabled={loading}>
-            Done / Close
+            {recent.length > 0 ? 'Done' : 'Cancel'}
           </Button>
         )}
-        <Button type="submit" variant="primary" loading={loading}>
+        <Button type="submit" variant="primary" loading={loading} loadingText="Saving…">
           Save Registration & Issue QR
         </Button>
       </div>

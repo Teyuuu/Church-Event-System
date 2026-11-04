@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { dashboardService } from './dashboardService'
 import { eventService } from '../events/eventService'
@@ -6,32 +6,38 @@ import { useAuth } from '../auth/AuthContext'
 import { Button } from '../../components/ui/Button'
 import { StatusBadge } from '../../components/ui/StatusBadge'
 import { LoadingState } from '../../components/ui/LoadingState'
-import { formatDate, formatTime } from '../../utils/date'
+import { ErrorState, getErrorMessage } from '../../components/ui/ErrorState'
+import { StatCard } from '../../components/ui/StatCard'
+import { usePolling, useNow } from '../../hooks/usePolling'
+import { formatDate, formatClockTime, timeAgo, todayLocal } from '../../utils/date'
 import {
-  Calendar,
   Users,
   CheckCircle2,
-  DollarSign,
   QrCode,
   ScanLine,
   UtensilsCrossed,
-  FileSpreadsheet,
-  Plus,
   RefreshCw,
-  ArrowRight,
-  UserCog,
-  History
+  ArrowRight
 } from 'lucide-react'
+
+const REFRESH_MS = 60000
 
 export function AdminDashboard() {
   const { profile } = useAuth()
+  const now = useNow(5000)
   const [metrics, setMetrics] = useState(null)
   const [events, setEvents] = useState([])
   const [selectedEventId, setSelectedEventId] = useState('')
+  const [initialized, setInitialized] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [error, setError] = useState(null)
+  const [lastUpdated, setLastUpdated] = useState(null)
 
-  const loadData = async (evtId = selectedEventId) => {
-    setLoading(true)
+  const loadData = useCallback(async (evtId, { silent = false } = {}) => {
+    if (silent) setRefreshing(true)
+    else setLoading(true)
+    setError(null)
     try {
       const [allEvents, m] = await Promise.all([
         eventService.getEvents(),
@@ -39,37 +45,53 @@ export function AdminDashboard() {
       ])
       setEvents(allEvents)
       setMetrics(m)
-      if (!selectedEventId && allEvents.length > 0) {
-        setSelectedEventId(allEvents[0].id)
-      }
+      setLastUpdated(Date.now())
+      return allEvents
     } catch (err) {
-      console.error('Failed to load dashboard metrics:', err)
+      if (!silent) setError(err)
+      return null
     } finally {
       setLoading(false)
+      setRefreshing(false)
     }
-  }
-
-  useEffect(() => {
-    loadData()
   }, [])
+
+  // First load: default to the event happening today (else most recent)
+  useEffect(() => {
+    (async () => {
+      const allEvents = await loadData('')
+      if (allEvents && allEvents.length > 0) {
+        const today = todayLocal()
+        const current = allEvents.find(e => e.start_date <= today && e.end_date >= today && e.status !== 'archived') || allEvents[0]
+        setSelectedEventId(current.id)
+        await loadData(current.id, { silent: true })
+      }
+      setInitialized(true)
+    })()
+  }, [loadData])
+
+  usePolling(() => loadData(selectedEventId, { silent: true }), REFRESH_MS, initialized)
 
   const handleEventFilterChange = (id) => {
     setSelectedEventId(id)
-    loadData(id)
+    loadData(id, { silent: true })
   }
 
   if (loading && !metrics) return <LoadingState message="Loading church dashboard..." />
+  if (error && !metrics) return <ErrorState message={getErrorMessage(error)} onRetry={() => loadData(selectedEventId)} />
+
+  const selectedEvent = events.find(e => e.id === selectedEventId)
+  const firstName = profile?.full_name?.split(' ')[0] || 'Staff Member'
 
   return (
     <div>
-      {/* Welcome Banner with Church Logo */}
-      <div className="card" style={{
+      {/* Welcome banner */}
+      <div className="card on-dark" style={{
         background: 'linear-gradient(135deg, #0A2540 0%, #103B6E 100%)',
         color: '#FFFFFF',
         padding: '1.25rem 1.5rem',
-        borderRadius: 'var(--radius-md)',
         borderLeft: '5px solid var(--color-brand-yellow-500)',
-        marginBottom: '1.5rem',
+        marginBottom: '1.25rem',
         display: 'flex',
         flexWrap: 'wrap',
         justifyContent: 'space-between',
@@ -78,237 +100,143 @@ export function AdminDashboard() {
         boxShadow: 'var(--shadow-md)'
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <img
-            src="/assets/church-logo.png"
-            alt="Berean Bible Baptist Church Logo"
-            style={{ width: '56px', height: '56px', objectFit: 'contain', filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.4))' }}
-          />
+          <img src="/assets/church-logo.png" alt="" style={{ width: '52px', height: '52px', objectFit: 'contain' }} />
           <div>
-            <h1 style={{ color: '#FFFFFF', fontSize: '1.45rem', marginBottom: '0.15rem' }}>
-              Welcome, {profile?.full_name || 'Staff Member'}
+            <h1 style={{ color: '#FFFFFF', fontSize: '1.4rem', marginBottom: '0.15rem' }}>
+              Welcome, {firstName}
             </h1>
-            <p style={{ color: 'var(--color-brand-yellow-500)', fontSize: '0.85rem', fontWeight: 700, letterSpacing: '0.03em', textTransform: 'uppercase' }}>
+            <p style={{ color: 'var(--color-brand-yellow-500)', fontSize: '0.8rem', fontWeight: 700, letterSpacing: '0.03em', textTransform: 'uppercase' }}>
               Berean Bible Baptist Church — Event Portal
             </p>
           </div>
         </div>
+      </div>
 
-        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
-          {events.length > 0 && (
-            <select
-              className="form-select"
-              style={{
-                width: 'auto',
-                minWidth: '220px',
-                backgroundColor: 'rgba(255, 255, 255, 0.15)',
-                color: '#FFFFFF',
-                border: '1px solid rgba(255, 222, 0, 0.4)',
-                fontWeight: 600
-              }}
-              value={selectedEventId}
-              onChange={(e) => handleEventFilterChange(e.target.value)}
-            >
-              <option value="" style={{ color: '#000000' }}>All Events Combined</option>
-              {events.map(e => (
-                <option key={e.id} value={e.id} style={{ color: '#000000' }}>{e.name}</option>
-              ))}
-            </select>
-          )}
-
-          <Button variant="gold" size="sm" onClick={() => loadData(selectedEventId)}>
+      {/* Toolbar: event filter + refresh state */}
+      <div className="card mb-15" style={{ padding: '0.85rem 1rem', display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: '1 1 260px' }}>
+          <label htmlFor="dash-event" className="form-label" style={{ margin: 0, whiteSpace: 'nowrap' }}>Showing</label>
+          <select
+            id="dash-event"
+            className="form-select"
+            value={selectedEventId}
+            onChange={(e) => handleEventFilterChange(e.target.value)}
+            style={{ maxWidth: '420px' }}
+          >
+            <option value="">All events combined</option>
+            {events.map(e => (
+              <option key={e.id} value={e.id}>{e.name}</option>
+            ))}
+          </select>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <span className="live-indicator is-online" title="Refreshes automatically every minute">
+            <span className="live-dot" aria-hidden="true" />
+            Updated {lastUpdated ? timeAgo(lastUpdated, now) : '—'}
+          </span>
+          <Button variant="secondary" size="sm" onClick={() => loadData(selectedEventId, { silent: true })} loading={refreshing} loadingText="Refreshing…">
             <RefreshCw size={14} />
             <span>Refresh</span>
           </Button>
         </div>
       </div>
 
-      {/* Primary Metrics Grid */}
       <div className="stat-grid">
-        <div className="stat-card">
-          <span className="stat-title">Confirmed Check-Ins Today</span>
-          <span className="stat-value" style={{ color: 'var(--color-brand-navy-900)' }}>
-            {metrics?.confirmedToday || 0}
-          </span>
-          <span className="stat-subtitle">Attendees arrived on active event days</span>
-        </div>
-
-        <div className="stat-card">
-          <span className="stat-title">Total Registrations</span>
-          <span className="stat-value" style={{ color: 'var(--color-brand-gold-600)' }}>
-            {metrics?.totalRegistrations || 0}
-          </span>
-          <span className="stat-subtitle">Confirmed attendees registered</span>
-        </div>
-
-        <div className="stat-card">
-          <span className="stat-title">Verified Collections</span>
-          <span className="stat-value" style={{ color: 'var(--color-success)' }}>
-            ₱{metrics?.totalRevenue?.toFixed(2) || '0.00'}
-          </span>
-          <span className="stat-subtitle">Registration fees received</span>
-        </div>
-
-        <div className="stat-card">
-          <span className="stat-title">Managed Events</span>
-          <span className="stat-value">{metrics?.totalEvents || 0}</span>
-          <span className="stat-subtitle">Conferences & camps</span>
-        </div>
+        <StatCard title="Check-Ins Today" value={metrics?.confirmedToday || 0} subtitle={todayLocal() ? `Arrivals on ${formatDate(todayLocal())}` : ''} />
+        <StatCard title="Registrations" value={metrics?.totalRegistrations || 0} tone="gold" subtitle="Confirmed attendees registered" />
+        <StatCard title="Collections" value={`₱${Number(metrics?.totalRevenue || 0).toFixed(2)}`} tone="success" subtitle="Verified registration fees" />
+        <StatCard title="Events" value={metrics?.totalEvents || 0} subtitle="Conferences & camps" />
       </div>
 
-      {/* Quick Action Station */}
-      <div className="card" style={{ marginBottom: '1.5rem', background: '#FFFFFF' }}>
+      {/* Quick operations for the selected event */}
+      <div className="card mb-15">
         <div className="card-header">
-          <h3>Quick Volunteer Operations</h3>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <Link to="/admin/accounts" className="btn btn-secondary btn-sm">
-              <UserCog size={15} />
-              <span>Manage Staff Accounts</span>
+          <h2 style={{ fontSize: '1.15rem' }}>
+            Quick Operations {selectedEvent && <span className="text-muted" style={{ fontWeight: 500, fontSize: '0.95rem' }}>· {selectedEvent.name}</span>}
+          </h2>
+        </div>
+        {selectedEventId ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: '0.75rem' }}>
+            <Link to={`/events/${selectedEventId}/scan`} className="btn btn-primary btn-tile">
+              <ScanLine size={24} aria-hidden="true" />
+              <span>Check-In Scanner</span>
             </Link>
-            <Link to="/admin/audit" className="btn btn-secondary btn-sm">
-              <History size={15} />
-              <span>Audit Log</span>
+            <Link to={`/events/${selectedEventId}/attendees`} className="btn btn-secondary btn-tile">
+              <Users size={24} aria-hidden="true" />
+              <span>Register Attendees</span>
+            </Link>
+            <Link to={`/events/${selectedEventId}/print`} className="btn btn-secondary btn-tile">
+              <QrCode size={24} aria-hidden="true" />
+              <span>Print QR Badges</span>
+            </Link>
+            <Link to={`/events/${selectedEventId}/kitchen`} className="btn btn-gold btn-tile">
+              <UtensilsCrossed size={24} aria-hidden="true" />
+              <span>Kitchen Board</span>
             </Link>
           </div>
-        </div>
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-          gap: '1rem'
-        }}>
-          {selectedEventId ? (
-            <>
-              <Link
-                to={`/events/${selectedEventId}/scan`}
-                className="btn btn-primary"
-                style={{ padding: '1rem', flexDirection: 'column', gap: '0.4rem', height: 'auto' }}
-              >
-                <ScanLine size={24} />
-                <span>Camera Check-In Scanner</span>
-              </Link>
-
-              <Link
-                to={`/events/${selectedEventId}/attendees`}
-                className="btn btn-secondary"
-                style={{ padding: '1rem', flexDirection: 'column', gap: '0.4rem', height: 'auto' }}
-              >
-                <Users size={24} color="var(--color-brand-navy-900)" />
-                <span>Register Attendee / Paper</span>
-              </Link>
-
-              <Link
-                to={`/events/${selectedEventId}/print`}
-                className="btn btn-secondary"
-                style={{ padding: '1rem', flexDirection: 'column', gap: '0.4rem', height: 'auto' }}
-              >
-                <QrCode size={24} color="var(--color-brand-gold-500)" />
-                <span>Print QR Badges & Sheets</span>
-              </Link>
-
-              <Link
-                to={`/kitchen/${selectedEventId}`}
-                className="btn btn-gold"
-                style={{ padding: '1rem', flexDirection: 'column', gap: '0.4rem', height: 'auto' }}
-              >
-                <UtensilsCrossed size={24} />
-                <span>Kitchen Headcount Board</span>
-              </Link>
-            </>
-          ) : (
-            <p className="text-muted" style={{ padding: '1rem', textAlign: 'center', gridColumn: '1 / -1' }}>
-              Select an event above to launch quick operations.
-            </p>
-          )}
-        </div>
+        ) : (
+          <p className="text-muted" style={{ padding: '0.5rem', textAlign: 'center' }}>
+            Choose an event above to show its quick operations.
+          </p>
+        )}
       </div>
 
-      {/* Two Column Layout: Recent Check-Ins & Active Events */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.5rem' }}>
-        {/* Recent Check-Ins Card */}
-        <div className="card">
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))', gap: '1.5rem' }}>
+        <section className="card" aria-labelledby="recent-heading">
           <div className="card-header">
-            <h3>Recent Check-Ins</h3>
-            <span className="badge badge-success">Live Activity</span>
+            <h2 id="recent-heading" style={{ fontSize: '1.15rem' }}>Recent Check-Ins</h2>
+            <span className="cell-sub">Auto-refreshes every minute</span>
           </div>
 
-          {metrics?.recentCheckins?.length === 0 ? (
+          {!metrics?.recentCheckins?.length ? (
             <p className="text-muted" style={{ textAlign: 'center', padding: '2rem 1rem' }}>
-              No check-in activity recorded today yet.
+              No check-in activity yet.
             </p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              {metrics?.recentCheckins?.map(c => (
-                <div
-                  key={c.id}
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    padding: '0.65rem 0.75rem',
-                    background: 'var(--color-bg-base)',
-                    borderRadius: 'var(--radius-sm)',
-                    border: '1px solid var(--color-border)'
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                    <CheckCircle2 size={18} color="var(--color-success)" />
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--color-brand-navy-900)' }}>
-                        {c.name}
-                      </div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-                        Day {c.day_number}
+            <ul className="recent-list" style={{ listStyle: 'none' }}>
+              {metrics.recentCheckins.map(c => (
+                <li key={c.id} className="recent-item">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', minWidth: 0 }}>
+                    <CheckCircle2 size={18} color="var(--color-success)" aria-hidden="true" style={{ flexShrink: 0 }} />
+                    <div style={{ minWidth: 0 }}>
+                      <div className="cell-title" style={{ fontSize: '0.9rem' }}>{c.name}</div>
+                      <div className="cell-sub">
+                        {c.event_name ? `${c.event_name} · ` : ''}Day {c.day_number}
                       </div>
                     </div>
                   </div>
-                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--color-text-muted)' }}>
-                    {formatTime(new Date(c.checked_in_at).toTimeString().split(' ')[0])}
+                  <span className="cell-sub" style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>
+                    {formatClockTime(c.checked_in_at)}
                   </span>
-                </div>
+                </li>
               ))}
-            </div>
+            </ul>
           )}
-        </div>
+        </section>
 
-        {/* Church Events Overview */}
-        <div className="card">
+        <section className="card" aria-labelledby="events-heading">
           <div className="card-header">
-            <h3>Church Events Directory</h3>
-            <Link to="/events" style={{ fontSize: '0.85rem', color: 'var(--color-brand-navy-800)', fontWeight: 600, textDecoration: 'none' }}>
-              View All
-            </Link>
+            <h2 id="events-heading" style={{ fontSize: '1.15rem' }}>Events</h2>
+            <Link to="/events" className="link" style={{ fontSize: '0.85rem' }}>View all</Link>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          <ul className="recent-list" style={{ listStyle: 'none' }}>
             {events.slice(0, 4).map(e => (
-              <div
-                key={e.id}
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  padding: '0.75rem',
-                  border: '1px solid var(--color-border)',
-                  borderRadius: 'var(--radius-sm)',
-                  background: '#FFFFFF'
-                }}
-              >
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: '0.925rem' }}>{e.name}</div>
-                  <div style={{ fontSize: '0.775rem', color: 'var(--color-text-muted)', marginTop: '0.2rem' }}>
-                    {formatDate(e.start_date)} — {formatDate(e.end_date)}
-                  </div>
+              <li key={e.id} className="recent-item" style={{ background: '#FFFFFF' }}>
+                <div style={{ minWidth: 0 }}>
+                  <div className="cell-title" style={{ fontSize: '0.925rem' }}>{e.name}</div>
+                  <div className="cell-sub">{formatDate(e.start_date)} — {formatDate(e.end_date)}</div>
                 </div>
-
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <StatusBadge status={e.status} />
-                  <Link to={`/events/${e.id}/attendees`} className="btn btn-secondary btn-sm" style={{ padding: '0.35rem 0.6rem' }}>
+                  <Link to={`/events/${e.id}`} className="btn btn-secondary btn-sm" aria-label={`Open ${e.name}`}>
                     <ArrowRight size={14} />
                   </Link>
                 </div>
-              </div>
+              </li>
             ))}
-          </div>
-        </div>
+          </ul>
+        </section>
       </div>
     </div>
   )

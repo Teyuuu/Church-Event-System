@@ -1,17 +1,33 @@
-import React, { useState, useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Modal } from '../../components/ui/Modal'
 import { Input } from '../../components/ui/Input'
+import { Select } from '../../components/ui/Select'
 import { Button } from '../../components/ui/Button'
+import { Alert } from '../../components/ui/Alert'
+import { useToast } from '../../components/ui/Toast'
+import { useConfirm } from '../../components/ui/ConfirmDialog'
 import { paymentService } from './paymentService'
-import { formatDate } from '../../utils/date'
-import { DollarSign, ShieldCheck, Check } from 'lucide-react'
+import { formatDateTime } from '../../utils/date'
+import { Check } from 'lucide-react'
+
+const METHOD_OPTIONS = [
+  { value: 'cash', label: 'Cash (Office)' },
+  { value: 'gcash', label: 'GCash' },
+  { value: 'bank_transfer', label: 'Bank Transfer' },
+  { value: 'other', label: 'Other' }
+]
+
+const peso = (n) => `₱${Number(n || 0).toFixed(2)}`
 
 export function PaymentModal({ isOpen, onClose, registration, event, onSuccess }) {
+  const toast = useToast()
+  const confirm = useConfirm()
   const [amount, setAmount] = useState('')
   const [method, setMethod] = useState('cash')
   const [reference, setReference] = useState('')
   const [notes, setNotes] = useState('')
   const [payments, setPayments] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(true)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -21,38 +37,54 @@ export function PaymentModal({ isOpen, onClose, registration, event, onSuccess }
     : 'Attendee'
 
   useEffect(() => {
+    let cancelled = false
     async function fetchPayments() {
       if (!registration?.id) return
+      setHistoryLoading(true)
       try {
         const history = await paymentService.getPaymentsByRegistration(registration.id)
+        if (cancelled) return
         setPayments(history)
-        const totalPaid = history
+        const paid = history
           .filter(p => p.payment_status === 'completed')
-          .reduce((sum, p) => sum + p.amount, 0)
-        const remaining = Math.max(0, fee - totalPaid)
-        setAmount(remaining > 0 ? remaining.toFixed(2) : '0.00')
-      } catch (err) {
-        console.error('Failed to load payments:', err)
+          .reduce((sum, p) => sum + parseFloat(p.amount || 0), 0)
+        const remaining = Math.max(0, fee - paid)
+        setAmount(remaining > 0 ? remaining.toFixed(2) : '')
+      } catch {
+        if (!cancelled) setError('Could not load payment history.')
+      } finally {
+        if (!cancelled) setHistoryLoading(false)
       }
     }
     fetchPayments()
+    return () => { cancelled = true }
   }, [registration, fee])
 
   const totalPaid = payments
     .filter(p => p.payment_status === 'completed')
-    .reduce((sum, p) => sum + p.amount, 0)
+    .reduce((sum, p) => sum + parseFloat(p.amount || 0), 0)
   const remainingBalance = Math.max(0, fee - totalPaid)
+  const isSettled = registration?.payment_status === 'waived' || (remainingBalance <= 0 && registration?.payment_status === 'paid')
+  const isDirty = Boolean(reference || notes)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (!amount || parseFloat(amount) <= 0) {
-      setError('Please enter a valid payment amount greater than zero.')
+    const value = parseFloat(amount)
+    if (!amount || Number.isNaN(value) || value <= 0) {
+      setError('Enter a payment amount greater than zero.')
       return
+    }
+    if (value > remainingBalance && remainingBalance > 0) {
+      const ok = await confirm({
+        title: 'Amount exceeds balance',
+        message: `${peso(value)} is more than the remaining balance of ${peso(remainingBalance)}. Record it anyway?`,
+        confirmLabel: 'Record Payment'
+      })
+      if (!ok) return
     }
 
     setError('')
     setLoading(true)
-
     try {
       await paymentService.recordPayment({
         registrationId: registration.id,
@@ -61,6 +93,7 @@ export function PaymentModal({ isOpen, onClose, registration, event, onSuccess }
         referenceNumber: reference,
         notes
       })
+      toast.success(`Recorded ${peso(value)} payment for ${attendeeName}`)
       if (onSuccess) onSuccess()
       onClose()
     } catch (err) {
@@ -71,10 +104,18 @@ export function PaymentModal({ isOpen, onClose, registration, event, onSuccess }
   }
 
   const handleWaive = async () => {
-    if (!window.confirm('Are you sure you want to approve a pastoral fee waiver for this attendee?')) return
+    const reason = await confirm({
+      title: 'Approve fee waiver',
+      message: `Waive the remaining registration fee for ${attendeeName}? This is recorded in the audit log.`,
+      confirmLabel: 'Approve Waiver',
+      input: { label: 'Reason and approver', placeholder: 'e.g. Pastoral waiver approved by Ptr. David', required: true }
+    })
+    if (!reason) return
+
     setLoading(true)
     try {
-      await paymentService.waivePayment(registration.id)
+      await paymentService.waivePayment(registration.id, reason, attendeeName)
+      toast.success(`Fee waived for ${attendeeName}`)
       if (onSuccess) onSuccess()
       onClose()
     } catch (err) {
@@ -85,131 +126,100 @@ export function PaymentModal({ isOpen, onClose, registration, event, onSuccess }
   }
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Record Event Registration Payment" maxWidth="560px">
-      {/* Attendee Summary Header */}
-      <div style={{
-        background: 'var(--color-bg-muted)',
-        padding: '1rem',
-        borderRadius: 'var(--radius-sm)',
-        marginBottom: '1.25rem',
-        border: '1px solid var(--color-border)'
-      }}>
-        <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>
-          Registration Details
-        </div>
-        <div style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-brand-navy-900)', marginTop: '0.2rem' }}>
+    <Modal isOpen={isOpen} onClose={onClose} title="Registration Payment" maxWidth="560px" isDirty={isDirty && !loading}>
+      <div className="fieldset-box">
+        <div className="stat-title" style={{ marginBottom: '0.15rem' }}>Attendee</div>
+        <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--color-brand-navy-900)' }}>
           {attendeeName}
         </div>
-        <div style={{ display: 'flex', gap: '1.5rem', marginTop: '0.5rem', fontSize: '0.875rem' }}>
-          <div>Standard Fee: <strong>₱{fee.toFixed(2)}</strong></div>
-          <div>Total Paid: <strong style={{ color: 'var(--color-success)' }}>₱{totalPaid.toFixed(2)}</strong></div>
-          <div>Balance: <strong style={{ color: remainingBalance > 0 ? 'var(--color-danger)' : 'var(--color-success)' }}>₱{remainingBalance.toFixed(2)}</strong></div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem 1.25rem', marginTop: '0.5rem', fontSize: '0.875rem' }}>
+          <span>Fee: <strong>{peso(fee)}</strong></span>
+          <span>Paid: <strong style={{ color: 'var(--color-success)' }}>{peso(totalPaid)}</strong></span>
+          <span>Balance: <strong style={{ color: remainingBalance > 0 ? 'var(--color-danger)' : 'var(--color-success)' }}>{peso(remainingBalance)}</strong></span>
         </div>
       </div>
 
-      {error && (
-        <div style={{
-          padding: '0.75rem',
-          backgroundColor: 'var(--color-danger-bg)',
-          color: 'var(--color-danger)',
-          borderRadius: 'var(--radius-sm)',
-          fontSize: '0.85rem',
-          marginBottom: '1rem'
-        }}>
-          {error}
-        </div>
+      {error && <Alert variant="error">{error}</Alert>}
+
+      {payments.length > 0 && (
+        <details style={{ marginBottom: '1rem' }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '0.875rem', color: 'var(--color-brand-navy-800)' }}>
+            Payment history ({payments.length})
+          </summary>
+          <ul style={{ listStyle: 'none', marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+            {payments.map(p => (
+              <li key={p.id} className="recent-item">
+                <span><strong>{peso(p.amount)}</strong> · {(p.payment_method || '').replace('_', ' ')}{p.reference_number ? ` · ${p.reference_number}` : ''}</span>
+                <span className="cell-sub">{formatDateTime(p.paid_at)}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
 
-      {remainingBalance <= 0 && registration?.payment_status === 'paid' ? (
+      {isSettled ? (
         <div style={{ textAlign: 'center', padding: '1rem' }}>
-          <div style={{
-            width: '48px',
-            height: '48px',
-            borderRadius: '50%',
-            backgroundColor: 'var(--color-success-bg)',
-            color: 'var(--color-success)',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            marginBottom: '0.5rem'
-          }}>
-            <Check size={28} />
+          <div className="empty-state-icon" style={{ margin: '0 auto 0.5rem', background: 'var(--color-success-bg)', color: 'var(--color-success)' }}>
+            <Check size={28} aria-hidden="true" />
           </div>
           <p style={{ fontWeight: 700, color: 'var(--color-success)', fontSize: '1.1rem' }}>
-            Paid in Full
+            {registration?.payment_status === 'waived' ? 'Fee Waived' : 'Paid in Full'}
           </p>
           <p className="text-muted" style={{ fontSize: '0.85rem' }}>
             This registration has no outstanding balance.
           </p>
+          <div className="form-actions" style={{ justifyContent: 'center' }}>
+            <Button variant="secondary" onClick={onClose}>Close</Button>
+          </div>
         </div>
       ) : (
         <form onSubmit={handleSubmit}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '1rem' }}>
+          <div className="form-row">
             <Input
-              label="Amount to Pay (PHP)"
+              label="Amount (PHP)"
               type="number"
+              inputMode="decimal"
               step="0.01"
+              min="0.01"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
+              disabled={historyLoading}
               required
+              autoFocus
             />
-
-            <div className="form-group">
-              <label className="form-label">Payment Method</label>
-              <select
-                className="form-select"
-                value={method}
-                onChange={(e) => setMethod(e.target.value)}
-              >
-                <option value="cash">Cash (Office)</option>
-                <option value="gcash">GCash</option>
-                <option value="bank_transfer">Bank Transfer</option>
-                <option value="other">Other</option>
-              </select>
-            </div>
+            <Select
+              label="Payment Method"
+              value={method}
+              onChange={(e) => setMethod(e.target.value)}
+              options={METHOD_OPTIONS}
+            />
           </div>
 
           <Input
-            label="Transaction Reference / Receipt #"
+            label={method === 'cash' ? 'Official Receipt # (Optional)' : 'Transaction Reference #'}
             value={reference}
             onChange={(e) => setReference(e.target.value)}
             placeholder="e.g. GCash Ref # or Church OR #"
+            required={method === 'gcash' || method === 'bank_transfer'}
           />
 
-          <div className="form-group">
-            <label className="form-label">Notes (Optional)</label>
-            <input
-              type="text"
-              className="form-control"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="e.g. Received by Sis. Mary at church lobby"
-            />
-          </div>
+          <Input
+            label="Notes (Optional)"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="e.g. Received by Sis. Mary at church lobby"
+          />
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1.5rem' }}>
-            <button
-              type="button"
-              onClick={handleWaive}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: 'var(--color-brand-gold-600)',
-                cursor: 'pointer',
-                fontWeight: 600,
-                fontSize: '0.85rem',
-                textDecoration: 'underline'
-              }}
-            >
-              Approve Pastoral Fee Waiver
-            </button>
-
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <div className="form-actions" style={{ justifyContent: 'space-between' }}>
+            <Button variant="ghost" onClick={handleWaive} disabled={loading} style={{ color: 'var(--color-brand-gold-600)' }}>
+              Approve Fee Waiver
+            </Button>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
               <Button variant="secondary" onClick={onClose} disabled={loading}>
                 Cancel
               </Button>
-              <Button type="submit" variant="primary" loading={loading}>
-                Save Payment Receipt
+              <Button type="submit" variant="primary" loading={loading} disabled={historyLoading}>
+                Save Payment
               </Button>
             </div>
           </div>

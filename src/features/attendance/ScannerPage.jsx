@@ -1,423 +1,511 @@
-import React, { useState, useEffect, useRef } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useOutletContext } from 'react-router-dom'
 import { Html5Qrcode } from 'html5-qrcode'
-import { eventService } from '../events/eventService'
 import { attendeeService } from '../attendees/attendeeService'
 import { attendanceService } from './attendanceService'
-import { ScanResult } from './ScanResult'
+import { ScanResult, getResultTone } from './ScanResult'
 import { Button } from '../../components/ui/Button'
-import { LoadingState } from '../../components/ui/LoadingState'
-import { formatDate } from '../../utils/date'
+import { Alert } from '../../components/ui/Alert'
+import { Tabs } from '../../components/ui/Tabs'
+import { SearchInput } from '../../components/ui/SearchInput'
+import { useOnlineStatus } from '../../hooks/useOnlineStatus'
+import { formatDate, formatClockTime, pickDefaultDay, todayLocal } from '../../utils/date'
 import {
   Camera,
   Search,
   UserCheck,
-  ArrowLeft,
+  StopCircle,
+  Keyboard,
   Wifi,
-  AlertCircle,
-  RefreshCw,
+  WifiOff,
   CheckCircle2,
-  StopCircle
+  SwitchCamera
 } from 'lucide-react'
 
-export function ScannerPage() {
-  const { eventId } = useParams()
-  const [event, setEvent] = useState(null)
-  const [selectedDayId, setSelectedDayId] = useState('')
-  const [loading, setLoading] = useState(true)
+const CAMERA_PREF_KEY = 'berean_scanner_camera_id'
+const AUTO_DISMISS_MS = { success: 2500, warning: 4000, danger: 4500 }
 
-  // Scanner state
-  const [isScanning, setIsScanning] = useState(false)
-  const [scanResult, setScanResult] = useState(null)
-  const [cameraError, setCameraError] = useState('')
-  const [activeTab, setActiveTab] = useState('camera') // 'camera' or 'manual'
-
-  // Manual lookup state
-  const [searchQuery, setSearchQuery] = useState('')
-  const [registrations, setRegistrations] = useState([])
-  const [manualLoadingId, setManualLoadingId] = useState(null)
-
-  const html5QrCodeRef = useRef(null)
-  const lastScannedTimeRef = useRef(0)
-  const lastScannedCodeRef = useRef('')
-
-  const loadData = async () => {
-    setLoading(true)
-    try {
-      const [evtData, regsData] = await Promise.all([
-        eventService.getEventById(eventId),
-        attendeeService.getEventRegistrations(eventId)
-      ])
-      setEvent(evtData)
-      setRegistrations(regsData)
-
-      // Default to currently open day or day 1
-      const openDay = evtData.days?.find(d => d.status === 'open') || evtData.days?.[0]
-      if (openDay) setSelectedDayId(openDay.id)
-    } catch (err) {
-      console.error('Failed to load scanner context:', err)
-    } finally {
-      setLoading(false)
+/* ---------- Audio + haptic feedback (one shared AudioContext) ---------- */
+let sharedAudioCtx = null
+function getAudioCtx() {
+  try {
+    if (!sharedAudioCtx) {
+      const Ctx = window.AudioContext || window.webkitAudioContext
+      if (!Ctx) return null
+      sharedAudioCtx = new Ctx()
     }
+    if (sharedAudioCtx.state === 'suspended') sharedAudioCtx.resume()
+    return sharedAudioCtx
+  } catch {
+    return null
+  }
+}
+
+function playTone(tone) {
+  const ctx = getAudioCtx()
+  const pattern = tone === 'success'
+    ? [{ f: 880, d: 0.12 }]
+    : tone === 'warning'
+      ? [{ f: 520, d: 0.12 }, { f: 520, d: 0.12 }]
+      : [{ f: 260, d: 0.18 }, { f: 220, d: 0.25 }]
+
+  if (ctx) {
+    let t = ctx.currentTime
+    pattern.forEach(({ f, d }) => {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = tone === 'success' ? 'sine' : 'square'
+      osc.frequency.setValueAtTime(f, t)
+      gain.gain.setValueAtTime(0.15, t)
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + d)
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start(t)
+      osc.stop(t + d)
+      t += d + 0.06
+    })
   }
 
-  useEffect(() => {
-    loadData()
-    return () => {
-      stopCamera()
+  if (navigator.vibrate) {
+    navigator.vibrate(tone === 'success' ? 80 : tone === 'warning' ? [80, 60, 80] : [200, 80, 200])
+  }
+}
+
+function readPref(key) {
+  try { return localStorage.getItem(key) } catch { return null }
+}
+function writePref(key, value) {
+  try { localStorage.setItem(key, value) } catch { /* ignore */ }
+}
+
+export function ScannerPage() {
+  const { event } = useOutletContext()
+  const eventId = event.id
+  const online = useOnlineStatus()
+
+  const defaultDay = useMemo(() => pickDefaultDay(event.days || []), [event.days])
+  const [selectedDayId, setSelectedDayId] = useState(defaultDay?.id || '')
+  const [activeTab, setActiveTab] = useState('camera') // camera | manual | device
+
+  // Camera
+  const [isScanning, setIsScanning] = useState(false)
+  const [cameraError, setCameraError] = useState('')
+  const [cameras, setCameras] = useState([])
+  const [cameraId, setCameraId] = useState(() => readPref(CAMERA_PREF_KEY) || '')
+
+  // Results
+  const [scanResult, setScanResult] = useState(null)
+  const [lastRequestFailed, setLastRequestFailed] = useState(false)
+
+  // Manual lookup
+  const [searchQuery, setSearchQuery] = useState('')
+  const [registrations, setRegistrations] = useState([])
+  const [checkedIn, setCheckedIn] = useState(new Map()) // registration_id -> checked_in_at
+  const [manualLoadingId, setManualLoadingId] = useState(null)
+
+  // Barcode device mode
+  const [deviceInput, setDeviceInput] = useState('')
+  const deviceInputRef = useRef(null)
+
+  // Refs read by long-lived camera callbacks (avoid stale closures)
+  const html5QrCodeRef = useRef(null)
+  const selectedDayIdRef = useRef(selectedDayId)
+  const processingRef = useRef(false)
+  const lastScanRef = useRef({ code: '', at: 0 })
+  const dismissTimerRef = useRef(null)
+
+  selectedDayIdRef.current = selectedDayId
+  const currentDay = event.days?.find(d => d.id === selectedDayId)
+  const isToday = currentDay?.event_date === todayLocal()
+  const isOpen = currentDay?.status === 'open'
+
+  /* ---------- Data ---------- */
+  const loadCheckedIn = useCallback(async (dayId) => {
+    if (!dayId) return
+    try {
+      const records = await attendanceService.getDailyAttendance(dayId)
+      const map = new Map()
+      records.forEach(r => { if (r.registration_id) map.set(r.registration_id, r.checked_in_at) })
+      setCheckedIn(map)
+    } catch {
+      // Non-critical: lookup still works without status badges
     }
+  }, [])
+
+  useEffect(() => {
+    attendeeService.getEventRegistrations(eventId)
+      .then(setRegistrations)
+      .catch(() => setRegistrations([]))
   }, [eventId])
 
-  const stopCamera = async () => {
-    if (html5QrCodeRef.current && isScanning) {
+  useEffect(() => {
+    loadCheckedIn(selectedDayId)
+  }, [selectedDayId, loadCheckedIn])
+
+  /* ---------- Result display ---------- */
+  const showResult = useCallback((result) => {
+    setScanResult(result)
+    const tone = getResultTone(result)
+    playTone(tone)
+    clearTimeout(dismissTimerRef.current)
+    dismissTimerRef.current = setTimeout(() => setScanResult(null), AUTO_DISMISS_MS[tone])
+    if (result?.success || result?.status === 'already_checked_in') {
+      loadCheckedIn(selectedDayIdRef.current)
+    }
+  }, [loadCheckedIn])
+
+  const dismissResult = () => {
+    clearTimeout(dismissTimerRef.current)
+    setScanResult(null)
+    if (activeTab === 'device') deviceInputRef.current?.focus()
+  }
+
+  useEffect(() => () => clearTimeout(dismissTimerRef.current), [])
+
+  // In lookup / device modes the result card renders below the list: bring it into view
+  useEffect(() => {
+    if (!scanResult || (activeTab === 'camera' && isScanning)) return
+    document.querySelector('.scan-result-card')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [scanResult, activeTab, isScanning])
+
+  /* ---------- Core check-in (always uses the CURRENT selected day) ---------- */
+  const processPayload = useCallback(async (decodedText) => {
+    const text = (decodedText || '').trim()
+    if (!text || processingRef.current) return
+
+    const now = Date.now()
+    if (text === lastScanRef.current.code && now - lastScanRef.current.at < 3000) return
+    lastScanRef.current = { code: text, at: now }
+
+    processingRef.current = true
+    try {
+      const result = await attendanceService.verifyAndCheckin(text, selectedDayIdRef.current)
+      setLastRequestFailed(false)
+      showResult(result)
+    } catch (err) {
+      setLastRequestFailed(true)
+      showResult({ success: false, status: 'error', message: err.message || 'Check-in request failed. Check the connection.' })
+    } finally {
+      processingRef.current = false
+    }
+  }, [showResult])
+
+  const processPayloadRef = useRef(processPayload)
+  processPayloadRef.current = processPayload
+
+  /* ---------- Camera lifecycle ---------- */
+  const stopCamera = useCallback(async () => {
+    const scanner = html5QrCodeRef.current
+    if (scanner) {
       try {
-        await html5QrCodeRef.current.stop()
+        if (scanner.isScanning) await scanner.stop()
       } catch (err) {
         console.warn('Error stopping camera:', err)
       }
-      setIsScanning(false)
+      try { scanner.clear() } catch { /* element may already be gone */ }
+      html5QrCodeRef.current = null
     }
-  }
+    setIsScanning(false)
+  }, [])
 
-  const startCamera = async () => {
+  // Always stop the camera when leaving the page
+  useEffect(() => () => {
+    const scanner = html5QrCodeRef.current
+    if (scanner) {
+      try {
+        if (scanner.isScanning) scanner.stop().catch(() => {})
+      } catch { /* ignore */ }
+      html5QrCodeRef.current = null
+    }
+  }, [])
+
+  const startCamera = async (preferredId = cameraId) => {
     setCameraError('')
     setScanResult(null)
+    getAudioCtx() // unlock audio during the user gesture
 
     try {
-      if (!html5QrCodeRef.current) {
-        html5QrCodeRef.current = new Html5Qrcode('qr-reader')
+      if (html5QrCodeRef.current) await stopCamera()
+      html5QrCodeRef.current = new Html5Qrcode('qr-reader')
+
+      let list = cameras
+      if (list.length === 0) {
+        try {
+          list = await Html5Qrcode.getCameras()
+          setCameras(list || [])
+        } catch {
+          list = []
+        }
       }
 
-      const qrConfig = { fps: 10, qrbox: { width: 250, height: 250 } }
+      const validId = preferredId && list.some(c => c.id === preferredId) ? preferredId : null
+      const source = validId ? validId : { facingMode: 'environment' }
 
       await html5QrCodeRef.current.start(
-        { facingMode: 'environment' },
-        qrConfig,
-        onScanSuccess,
-        onScanFailure
+        source,
+        { fps: 10, qrbox: (w, h) => { const s = Math.floor(Math.min(w, h) * 0.7); return { width: s, height: s } } },
+        (text) => processPayloadRef.current(text),
+        () => {}
       )
-
       setIsScanning(true)
     } catch (err) {
       console.error('Failed to start camera:', err)
-      setCameraError('Camera access failed. Please ensure camera permissions are granted and you are using HTTPS.')
+      html5QrCodeRef.current = null
+      setCameraError('Camera access failed. Allow camera permission in your browser and make sure the site is opened over HTTPS. You can also use Manual Lookup.')
       setIsScanning(false)
     }
   }
 
-  const onScanSuccess = async (decodedText) => {
-    const now = Date.now()
-    // Debounce duplicate scans within 2.5 seconds
-    if (decodedText === lastScannedCodeRef.current && now - lastScannedTimeRef.current < 2500) {
-      return
-    }
-
-    lastScannedCodeRef.current = decodedText
-    lastScannedTimeRef.current = now
-
-    // Play subtle audio beep if supported
-    try {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)()
-      const osc = ctx.createOscillator()
-      osc.type = 'sine'
-      osc.frequency.setValueAtTime(800, ctx.currentTime)
-      osc.connect(ctx.destination)
-      osc.start()
-      osc.stop(ctx.currentTime + 0.1)
-    } catch {
-      // AudioContext not supported or muted
-    }
-
-    // Call atomic check-in
-    try {
-      const result = await attendanceService.verifyAndCheckin(decodedText, selectedDayId)
-      setScanResult(result)
-    } catch (err) {
-      setScanResult({
-        success: false,
-        status: 'error',
-        message: err.message || 'Check-in request failed.'
-      })
-    }
+  const handleCameraChange = async (id) => {
+    setCameraId(id)
+    writePref(CAMERA_PREF_KEY, id)
+    if (isScanning) await startCamera(id)
   }
 
-  const onScanFailure = () => {
-    // Silent frame failure
+  const switchCamera = async () => {
+    if (cameras.length < 2) return
+    const idx = cameras.findIndex(c => c.id === cameraId)
+    const next = cameras[(idx + 1) % cameras.length]
+    await handleCameraChange(next.id)
   }
 
+  const handleTabChange = async (tab) => {
+    if (tab !== 'camera') await stopCamera()
+    setScanResult(null)
+    setActiveTab(tab)
+    if (tab === 'device') setTimeout(() => deviceInputRef.current?.focus(), 50)
+  }
+
+  /* ---------- Manual check-in ---------- */
   const handleManualCheckIn = async (regId) => {
+    getAudioCtx()
     setManualLoadingId(regId)
     try {
       const result = await attendanceService.manualCheckin(regId, selectedDayId)
-      setScanResult(result)
+      setLastRequestFailed(false)
+      showResult(result)
     } catch (err) {
-      setScanResult({
-        success: false,
-        status: 'error',
-        message: err.message || 'Manual check-in failed.'
-      })
+      setLastRequestFailed(true)
+      showResult({ success: false, status: 'error', message: err.message || 'Manual check-in failed.' })
     } finally {
       setManualLoadingId(null)
     }
   }
 
-  if (loading) return <LoadingState message="Configuring scanner station..." />
-  if (!event) return <div>Event not found.</div>
+  // Word-order independent search ("dela cruz juan" matches "Juan Dela Cruz")
+  const filteredRegistrations = useMemo(() => {
+    const tokens = searchQuery.toLowerCase().split(/\s+/).filter(Boolean)
+    if (tokens.length === 0) return []
+    return registrations.filter(r => {
+      const att = r.attendee
+      if (!att) return false
+      const haystack = `${att.first_name} ${att.middle_name || ''} ${att.last_name} ${att.contact_number || ''} ${att.households?.family_name || ''}`.toLowerCase()
+      return tokens.every(t => haystack.includes(t))
+    }).slice(0, 30)
+  }, [registrations, searchQuery])
 
-  const currentDay = event.days?.find(d => d.id === selectedDayId)
+  /* ---------- Barcode device ---------- */
+  const handleDeviceSubmit = async (e) => {
+    e.preventDefault()
+    getAudioCtx()
+    const value = deviceInput
+    setDeviceInput('')
+    lastScanRef.current = { code: '', at: 0 } // devices intentionally re-scan
+    await processPayload(value)
+    deviceInputRef.current?.focus()
+  }
 
-  // Manual search filter
-  const filteredRegistrations = registrations.filter(r => {
-    if (!searchQuery.trim()) return false
-    const att = r.attendee
-    if (!att) return false
-    const q = searchQuery.toLowerCase()
-    return (
-      `${att.first_name} ${att.last_name}`.toLowerCase().includes(q) ||
-      (att.contact_number && att.contact_number.includes(q))
-    )
-  })
+  /* ---------- Render ---------- */
+  const connectionTone = !online ? 'is-offline' : lastRequestFailed ? 'is-stale' : 'is-online'
+  const connectionLabel = !online ? 'Offline' : lastRequestFailed ? 'Connection issue' : 'Online'
 
   return (
-    <div style={{ maxWidth: '640px', margin: '0 auto' }}>
-      {/* Navigation & Header */}
-      <div style={{ marginBottom: '1rem' }}>
-        <Link to="/events" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', color: 'var(--color-brand-navy-800)', textDecoration: 'none', fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.4rem' }}>
-          <ArrowLeft size={16} />
-          <span>Back to Events</span>
-        </Link>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
-          <div>
-            <h1 style={{ fontSize: '1.4rem' }}>Usher QR Scanner</h1>
-            <p className="text-muted" style={{ fontSize: '0.85rem' }}>{event.name}</p>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.75rem', color: 'var(--color-success)', fontWeight: 700, background: 'var(--color-success-bg)', padding: '0.25rem 0.6rem', borderRadius: 'var(--radius-full)' }}>
-            <Wifi size={14} />
-            <span>Connected</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Prominent Day Selector Banner */}
-      <div className="card" style={{
+    <div style={{ maxWidth: '680px', margin: '0 auto' }}>
+      {/* Day selector banner */}
+      <div className="card on-dark" style={{
         backgroundColor: 'var(--color-brand-navy-900)',
         color: '#FFFFFF',
         marginBottom: '1rem',
         padding: '1rem 1.25rem',
-        border: '2px solid var(--color-brand-yellow-500)',
-        boxShadow: '0 4px 6px -1px rgba(10, 37, 64, 0.15)'
+        border: '2px solid var(--color-brand-yellow-500)'
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
           <div>
             <span style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--color-brand-yellow-500)', fontWeight: 800 }}>
-              Active Check-In Session:
+              Checking in for
             </span>
             <div style={{ fontSize: '1.25rem', fontWeight: 800 }}>
-              Day {currentDay?.day_number || 1} — {formatDate(currentDay?.event_date)}
+              {currentDay ? `Day ${currentDay.day_number} — ${formatDate(currentDay.event_date)}` : 'No event day'}
             </div>
-            <div style={{ fontSize: '0.8rem', color: currentDay?.status === 'open' ? '#A7F3D0' : '#FECACA', fontWeight: 600 }}>
-              Status: {currentDay?.status?.toUpperCase()}
+            <div style={{ fontSize: '0.85rem', color: isOpen ? '#A7F3D0' : '#FECACA', fontWeight: 700 }}>
+              {isOpen ? 'Check-in is OPEN' : `Check-in is ${(currentDay?.status || 'unavailable').toUpperCase()}`}
             </div>
           </div>
 
-          {event.days?.length > 1 && (
-            <select
-              className="form-select"
-              style={{
-                width: 'auto',
-                backgroundColor: 'rgba(255, 255, 255, 0.15)',
-                color: '#FFFFFF',
-                border: '1px solid rgba(255, 255, 255, 0.3)',
-                fontSize: '0.85rem',
-                minHeight: '38px'
-              }}
-              value={selectedDayId}
-              onChange={(e) => {
-                setSelectedDayId(e.target.value)
-                setScanResult(null)
-              }}
-            >
-              {event.days.map(d => (
-                <option key={d.id} value={d.id} style={{ color: '#000000' }}>
-                  Day {d.day_number} ({formatDate(d.event_date)}) — {d.status}
-                </option>
-              ))}
-            </select>
-          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <span className={`live-indicator ${connectionTone}`} role="status">
+              {online ? <Wifi size={14} aria-hidden="true" /> : <WifiOff size={14} aria-hidden="true" />}
+              {connectionLabel}
+            </span>
+            {event.days?.length > 1 && (
+              <>
+                <label htmlFor="scanner-day" className="sr-only">Event day</label>
+                <select
+                  id="scanner-day"
+                  className="form-select"
+                  style={{ width: 'auto', minHeight: '40px', fontSize: '0.9rem' }}
+                  value={selectedDayId}
+                  onChange={(e) => {
+                    setSelectedDayId(e.target.value)
+                    setScanResult(null)
+                  }}
+                >
+                  {event.days.map(d => (
+                    <option key={d.id} value={d.id}>
+                      Day {d.day_number} ({formatDate(d.event_date)}) — {d.status}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Mode Tabs */}
-      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
-        <button
-          type="button"
-          onClick={() => {
-            setActiveTab('camera')
-          }}
-          style={{
-            flex: 1,
-            padding: '0.75rem',
-            borderRadius: 'var(--radius-sm)',
-            border: '1px solid var(--color-border)',
-            background: activeTab === 'camera' ? 'var(--color-brand-navy-900)' : '#FFFFFF',
-            color: activeTab === 'camera' ? '#FFFFFF' : 'var(--color-brand-navy-900)',
-            fontWeight: 700,
-            fontSize: '0.9rem',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '0.5rem'
-          }}
-        >
-          <Camera size={18} />
-          <span>Camera Scanner</span>
-        </button>
+      {currentDay && !isOpen && (
+        <Alert variant="error" title="Check-in is not open for this day">
+          Scans will be rejected. Ask an administrator to open Day {currentDay.day_number} on the Schedule tab, or pick the correct day above.
+        </Alert>
+      )}
+      {currentDay && isOpen && !isToday && (
+        <Alert variant="warning" title="The selected day is not today">
+          You are checking people in for {formatDate(currentDay.event_date)}. Make sure this is intended.
+        </Alert>
+      )}
+      {!online && (
+        <Alert variant="warning" title="You are offline">
+          Check-ins cannot be verified until the connection returns.
+        </Alert>
+      )}
 
-        <button
-          type="button"
-          onClick={() => {
-            stopCamera()
-            setActiveTab('manual')
-          }}
-          style={{
-            flex: 1,
-            padding: '0.75rem',
-            borderRadius: 'var(--radius-sm)',
-            border: '1px solid var(--color-border)',
-            background: activeTab === 'manual' ? 'var(--color-brand-navy-900)' : '#FFFFFF',
-            color: activeTab === 'manual' ? '#FFFFFF' : 'var(--color-brand-navy-900)',
-            fontWeight: 700,
-            fontSize: '0.9rem',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '0.5rem'
-          }}
-        >
-          <Search size={18} />
-          <span>Manual Lookup</span>
-        </button>
+      {/* Mode tabs */}
+      <div style={{ marginBottom: '1rem' }}>
+        <Tabs
+          label="Check-in mode"
+          fullWidth
+          value={activeTab}
+          onChange={handleTabChange}
+          options={[
+            { value: 'camera', label: 'Camera', icon: Camera },
+            { value: 'manual', label: 'Name Lookup', icon: Search },
+            { value: 'device', label: 'Scanner Device', icon: Keyboard }
+          ]}
+        />
       </div>
 
-      {/* Camera View Mode */}
+      {/* Camera mode */}
       {activeTab === 'camera' && (
-        <div className="card" style={{ padding: '1.25rem', textAlign: 'center' }}>
-          {cameraError && (
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              backgroundColor: 'var(--color-danger-bg)',
-              color: 'var(--color-danger)',
-              padding: '0.75rem',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: '0.85rem',
-              marginBottom: '1rem',
-              textAlign: 'left'
-            }}>
-              <AlertCircle size={20} />
-              <span>{cameraError}</span>
+        <div className="card" style={{ padding: '1rem', textAlign: 'center' }}>
+          {cameraError && <Alert variant="error" style={{ textAlign: 'left' }}>{cameraError}</Alert>}
+
+          <div className="scanner-viewport" style={{ minHeight: isScanning ? '320px' : 0, background: isScanning ? '#000' : 'transparent' }}>
+            <div id="qr-reader" style={{ width: '100%' }} />
+            {isScanning && scanResult && (
+              <ScanResult result={scanResult} variant="overlay" onDismiss={dismissResult} />
+            )}
+          </div>
+
+          {!isScanning ? (
+            <Button variant="primary" size="lg" block onClick={() => startCamera()}>
+              <Camera size={22} />
+              <span>Start Camera Scanner</span>
+            </Button>
+          ) : (
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <Button variant="secondary" onClick={stopCamera} style={{ flex: 1 }}>
+                <StopCircle size={18} />
+                <span>Stop Camera</span>
+              </Button>
+              {cameras.length > 1 && (
+                <Button variant="secondary" onClick={switchCamera} aria-label="Switch camera">
+                  <SwitchCamera size={18} />
+                  <span className="hide-sm">Switch</span>
+                </Button>
+              )}
             </div>
           )}
 
-          {/* HTML5 QR Code Container */}
-          <div
-            id="qr-reader"
-            style={{
-              width: '100%',
-              minHeight: isScanning ? '320px' : '0px',
-              borderRadius: '12px',
-              overflow: 'hidden',
-              backgroundColor: isScanning ? '#000000' : 'transparent',
-              marginBottom: '1rem'
-            }}
-          />
-
-          {!isScanning ? (
-            <Button
-              variant="primary"
-              size="lg"
-              onClick={startCamera}
-              style={{ width: '100%', padding: '1rem' }}
-            >
-              <Camera size={22} />
-              <span>Activate Smartphone Camera</span>
-            </Button>
-          ) : (
-            <Button
-              variant="secondary"
-              onClick={stopCamera}
-              style={{ width: '100%' }}
-            >
-              <StopCircle size={18} />
-              <span>Stop Camera</span>
-            </Button>
+          {cameras.length > 1 && (
+            <div style={{ marginTop: '0.75rem', textAlign: 'left' }}>
+              <label htmlFor="scanner-camera" className="form-label" style={{ fontSize: '0.8rem' }}>Camera</label>
+              <select
+                id="scanner-camera"
+                className="form-select"
+                value={cameraId}
+                onChange={(e) => handleCameraChange(e.target.value)}
+              >
+                <option value="">Default (back camera)</option>
+                {cameras.map(c => <option key={c.id} value={c.id}>{c.label || c.id}</option>)}
+              </select>
+            </div>
           )}
 
-          <p className="text-muted" style={{ fontSize: '0.8rem', marginTop: '0.75rem' }}>
-            Position the attendee's digital phone pass or printed QR card in the viewfinder.
+          <p className="text-muted" style={{ fontSize: '0.825rem', marginTop: '0.75rem' }}>
+            Point the camera at the attendee&apos;s phone pass or printed QR card. Results appear on screen with a sound —
+            one beep means checked in, two beeps mean already checked in, a low tone means denied.
           </p>
         </div>
       )}
 
-      {/* Manual Search Mode */}
+      {/* Manual lookup mode */}
       {activeTab === 'manual' && (
-        <div className="card" style={{ padding: '1.25rem' }}>
-          <div style={{ position: 'relative', marginBottom: '1rem' }}>
-            <Search size={18} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-light)' }} />
-            <input
-              type="text"
-              className="form-control"
-              placeholder="Search attendee by full name or phone number..."
-              style={{ paddingLeft: '2.5rem' }}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              autoFocus
-            />
-          </div>
+        <div className="card" style={{ padding: '1rem' }}>
+          <SearchInput
+            value={searchQuery}
+            onChange={setSearchQuery}
+            label="Search attendee"
+            placeholder="Type a name, family name or phone number…"
+            autoFocus
+          />
 
           {searchQuery.trim() && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '350px', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.75rem', maxHeight: '420px', overflowY: 'auto' }}>
               {filteredRegistrations.length === 0 ? (
-                <p className="text-muted" style={{ textAlign: 'center', padding: '1.5rem', fontSize: '0.875rem' }}>
-                  No matching attendee records found.
+                <p className="text-muted" style={{ textAlign: 'center', padding: '1.5rem', fontSize: '0.9rem' }}>
+                  No matching attendee. Check the spelling, or register them at the desk.
                 </p>
               ) : (
                 filteredRegistrations.map(r => {
                   const att = r.attendee
+                  const checkedAt = checkedIn.get(r.id)
                   return (
-                    <div
-                      key={r.id}
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        padding: '0.75rem 1rem',
-                        border: '1px solid var(--color-border)',
-                        borderRadius: 'var(--radius-sm)',
-                        background: '#FFFFFF'
-                      }}
-                    >
-                      <div>
-                        <div style={{ fontWeight: 700, color: 'var(--color-brand-navy-900)' }}>
-                          {att.first_name} {att.last_name}
+                    <div key={r.id} className="list-card" style={{ padding: '0.7rem 0.9rem' }}>
+                      <div className="list-card-row" style={{ alignItems: 'center' }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div className="cell-title">{att.first_name} {att.last_name}</div>
+                          <div className="cell-sub">
+                            {att.classification?.toUpperCase()} • {att.contact_number || 'No contact'}
+                            {att.households?.family_name ? ` • ${att.households.family_name}` : ''}
+                          </div>
+                          {checkedAt && (
+                            <div style={{ fontSize: '0.8rem', color: 'var(--color-success)', fontWeight: 700, marginTop: '0.15rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                              <CheckCircle2 size={14} aria-hidden="true" /> Checked in at {formatClockTime(checkedAt)}
+                            </div>
+                          )}
                         </div>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-                          {att.classification?.toUpperCase()} • {att.contact_number || 'No contact'}
-                        </div>
+                        <Button
+                          variant={checkedAt ? 'secondary' : 'gold'}
+                          size="sm"
+                          loading={manualLoadingId === r.id}
+                          loadingText="Checking…"
+                          disabled={Boolean(checkedAt)}
+                          onClick={() => handleManualCheckIn(r.id)}
+                          aria-label={checkedAt ? `${att.first_name} ${att.last_name} already checked in` : `Check in ${att.first_name} ${att.last_name}`}
+                        >
+                          <UserCheck size={14} />
+                          <span>{checkedAt ? 'Done' : 'Check In'}</span>
+                        </Button>
                       </div>
-
-                      <Button
-                        variant="gold"
-                        size="sm"
-                        loading={manualLoadingId === r.id}
-                        onClick={() => handleManualCheckIn(r.id)}
-                      >
-                        <UserCheck size={14} />
-                        <span>Check In</span>
-                      </Button>
                     </div>
                   )
                 })
@@ -427,11 +515,39 @@ export function ScannerPage() {
         </div>
       )}
 
-      {/* Scan Outcome Card */}
-      <ScanResult
-        result={scanResult}
-        onDismiss={() => setScanResult(null)}
-      />
+      {/* USB / Bluetooth barcode scanner mode */}
+      {activeTab === 'device' && (
+        <div className="card" style={{ padding: '1rem' }}>
+          <form onSubmit={handleDeviceSubmit}>
+            <label htmlFor="device-input" className="form-label">Scan with a USB or Bluetooth barcode scanner</label>
+            <input
+              id="device-input"
+              ref={deviceInputRef}
+              className="form-control"
+              value={deviceInput}
+              onChange={(e) => setDeviceInput(e.target.value)}
+              onBlur={() => {
+                // Keep focus so the next scan is captured
+                setTimeout(() => {
+                  if (activeTab === 'device' && document.activeElement === document.body) deviceInputRef.current?.focus()
+                }, 100)
+              }}
+              autoComplete="off"
+              autoFocus
+              placeholder="Waiting for scan…"
+              style={{ fontFamily: 'ui-monospace, monospace' }}
+            />
+            <p className="form-text">
+              Keep this box focused. Most scanners type the code and press Enter automatically.
+            </p>
+          </form>
+        </div>
+      )}
+
+      {/* Result card for non-camera modes (and camera when stopped) */}
+      {scanResult && !(activeTab === 'camera' && isScanning) && (
+        <ScanResult result={scanResult} onDismiss={dismissResult} />
+      )}
     </div>
   )
 }

@@ -84,6 +84,28 @@ export const attendeeService = {
   },
 
   /**
+   * Find an existing registration by name + mobile number (used by the public
+   * "Retrieve my pass" flow and duplicate detection on self-registration).
+   * Returns null when not found or when the lookup is not permitted.
+   */
+  async findRegistrationByContact({ eventId, firstName, lastName, contactNumber }) {
+    const norm = (v) => (v || '').trim().toLowerCase()
+    const digits = (v) => (v || '').replace(/\D/g, '').replace(/^63/, '0')
+    let regs = []
+    try {
+      regs = await this.getEventRegistrations(eventId)
+    } catch {
+      return null
+    }
+    return regs.find(r =>
+      norm(r.attendee?.first_name) === norm(firstName) &&
+      norm(r.attendee?.last_name) === norm(lastName) &&
+      digits(r.attendee?.contact_number) !== '' &&
+      digits(r.attendee?.contact_number) === digits(contactNumber)
+    ) || null
+  },
+
+  /**
    * Register a single attendee for an event
    */
   async registerAttendee({

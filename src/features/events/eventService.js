@@ -80,8 +80,8 @@ export const eventService = {
           event_date: dayDate.toISOString().split('T')[0],
           day_number: i + 1,
           status: i === 0 ? 'open' : 'scheduled',
-          expected_walk_ins: eventData.expected_walk_ins || 0,
-          meal_buffer_percentage: eventData.default_meal_buffer_percentage || 10.00
+          expected_walk_ins: eventData.expected_walk_ins ?? 0,
+          meal_buffer_percentage: eventData.default_meal_buffer_percentage ?? 10.00
         })
       }
 
@@ -111,13 +111,47 @@ export const eventService = {
         event_date: dayDate.toISOString().split('T')[0],
         day_number: i + 1,
         status: i === 0 ? 'open' : 'scheduled',
-        expected_walk_ins: eventData.expected_walk_ins || 0,
-        meal_buffer_percentage: eventData.default_meal_buffer_percentage || 10.00
+        expected_walk_ins: eventData.expected_walk_ins ?? 0,
+        meal_buffer_percentage: eventData.default_meal_buffer_percentage ?? 10.00
       })
     }
 
     saveStore(store)
     return newEvent
+  },
+
+  /**
+   * Update event details (name, venue, status, fees, kitchen defaults).
+   * Dates are not editable here because event days are generated from them.
+   */
+  async updateEvent(id, updates) {
+    const allowed = [
+      'name', 'description', 'venue', 'start_time', 'end_time', 'status', 'capacity',
+      'has_registration_fee', 'registration_fee', 'currency', 'payment_instructions',
+      'require_payment_before_checkin', 'expected_walk_ins', 'default_meal_buffer_percentage',
+      'meals_per_attendee'
+    ]
+    const clean = Object.fromEntries(
+      Object.entries(updates).filter(([key]) => allowed.includes(key))
+    )
+
+    if (isSupabaseConfigured && supabase) {
+      const { data, error } = await supabase
+        .from('events')
+        .update(clean)
+        .eq('id', id)
+        .select()
+        .single()
+      if (error) throw error
+      return data
+    }
+
+    const store = getStore()
+    const idx = store.events.findIndex(e => e.id === id)
+    if (idx === -1) throw new Error('Event not found')
+    store.events[idx] = { ...store.events[idx], ...clean }
+    saveStore(store)
+    return store.events[idx]
   },
 
   /**
